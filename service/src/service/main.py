@@ -1,4 +1,4 @@
-"""FastAPI app — entrypoint do serviço vlibras.
+"""FastAPI app — entrypoint do serviço libras2.
 
 Rotas:
   GET  /health
@@ -20,14 +20,14 @@ from service.gloss import normalize_pt
 from service.translator import Translator
 from service.renderer import render
 
-logger = logging.getLogger("vlibras")
+logger = logging.getLogger("libras2")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
-DATA_DIR = Path(os.getenv("VLIBRAS_DATA_DIR", "/opt/vlibras/data/vlibrasil"))
-CACHE_DIR = Path(os.getenv("VLIBRAS_CACHE_DIR", "/opt/vlibras/data/cache"))
+DATA_DIR = Path(os.getenv("LIBRAS2_DATA_DIR", "/opt/libras2/data/vlibrasil"))
+CACHE_DIR = Path(os.getenv("LIBRAS2_CACHE_DIR", "/opt/libras2/data/cache"))
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="vlibras", version="0.1.0", docs_url="/docs")
+app = FastAPI(title="libras2", version="0.1.0", docs_url="/docs")
 
 # Singleton — instancia uma vez, reusa por request
 _translator: Translator | None = None

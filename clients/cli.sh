@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Wrapper CLI pra vlibras API.
+# Wrapper CLI pra libras2 API.
 # uso:  ./cli.sh "bom dia"
 #       ./cli.sh "bom dia" --gif
 #       ./cli.sh --health
@@ -7,7 +7,7 @@
 # Requer: curl, jq
 set -euo pipefail
 
-API=${VLIBRAS_API:-http://127.0.0.1:8088}
+API=${LIBRAS2_API:-http://127.0.0.1:8088}
 FMT=mp4
 TEXT=""
 

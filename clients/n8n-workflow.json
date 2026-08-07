@@ -1,5 +1,5 @@
 {
-  "name": "vlibras — Webhook to Libras video",
+  "name": "libras2 — Webhook to Libras video",
   "nodes": [
     {
       "parameters": {
@@ -13,7 +13,7 @@
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
       "position": [200, 300],
-      "webhookId": "vlibras-in"
+      "webhookId": "libras2-in"
     },
     {
       "parameters": {
@@ -86,8 +86,8 @@
           "responseHeaders": {
             "parameters": [
               {"name": "Content-Type", "value": "video/mp4"},
-              {"name": "X-Vlibras-Gloss", "value": "={{$node[\"POST /translate\"].json[\"gloss\"].join(\" \")}}"},
-              {"name": "X-Vlibras-Missing", "value": "={{$node[\"POST /translate\"].json[\"missing\"].join(\",\")}}"}
+              {"name": "X-Libras2-Gloss", "value": "={{$node[\"POST /translate\"].json[\"gloss\"].join(\" \")}}"},
+              {"name": "X-Libras2-Missing", "value": "={{$node[\"POST /translate\"].json[\"missing\"].join(\",\")}}"}
             ]
           }
         }

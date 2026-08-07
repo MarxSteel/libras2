@@ -1,6 +1,6 @@
-"""Testes do serviço vlibras.
+"""Testes do serviço libras2.
 
-Pré-requisito: dataset V-LIBRASIL presente em /opt/vlibras/data/vlibrasil/videos/
+Pré-requisito: dataset V-LIBRASIL presente em /opt/libras2/data/vlibrasil/videos/
 (rodar scripts/download_vlibrasil.py antes). Senão os testes rodam em modo smoke
 (verificam que a API responde 503/422 e que o /health funciona).
 """

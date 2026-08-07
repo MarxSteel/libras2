@@ -1,4 +1,4 @@
-# vlibras — Plano de Implementação
+# libras2 — Plano de Implementação
 
 > API REST que traduz Português para Libras e devolve MP4/GIF do sinal.
 > Sem amarração a nenhum canal. Pode ser consumida por agente, n8n, CLI, frontend,
@@ -6,9 +6,9 @@
 
 ## Contexto
 
-A conta `MarxSteel` no GitHub tem `ANP` e `suporte` mas **não tem `vlibras`**. O workspace
+A conta `MarxSteel` no GitHub tem `ANP` e `suporte` mas **não tem `libras2`**. O workspace
 local `~/Documents/projetos/libras` está vazio. `vareni-8` (195.200.0.69, Ubuntu 24.04, 8GB
-RAM) está limpo. O projeto é **greenfield** — `MarxSteel/vlibras` será criado do zero.
+RAM) está limpo. O projeto é **greenfield** — `MarxSteel/libras2` será criado do zero.
 
 ### Decisões de arquitetura
 
@@ -35,7 +35,7 @@ RAM) está limpo. O projeto é **greenfield** — `MarxSteel/vlibras` será cria
 
 ```
 ┌─────────────────┐                                  ┌────────────────────────────┐
-│  Cliente HTTP   │   POST /translate                │  vlibras service           │
+│  Cliente HTTP   │   POST /translate                │  libras2 service           │
 │                 │   {text, format}                 │  (FastAPI + uvicorn)       │
 │  • agente (LLM) │ ──────────────────────────────►  │  :8088                     │
 │  • n8n          │                                  │                            │
@@ -73,16 +73,16 @@ RAM) está limpo. O projeto é **greenfield** — `MarxSteel/vlibras` será cria
 ### Fase 0 — Bootstrap ✅
 
 - [x] `vareni-8`: instalar `ffmpeg`, `python3-pip`, `python3-venv`, `jq`.
-- [x] `vareni-8`: `mkdir /opt/vlibras && git init -b main`.
+- [x] `vareni-8`: `mkdir /opt/libras2 && git init -b main`.
 - [x] Local: scaffold de pastas em `~/Documents/projetos/libras/`.
 - [x] Plano, README, runbook, esqueleto do service, esqueleto dos clientes.
-- [ ] **Você**: criar o repo `MarxSteel/vlibras` vazio no GitHub e me passar um PAT
+- [ ] **Você**: criar o repo `MarxSteel/libras2` vazio no GitHub e me passar um PAT
       fine-grained com `Contents: Read and write` nesse repo. Alternativa: aceitar
       `--allow-unrelated-histories` e usar o repo local como está.
 
 ### Fase 1 — API funcionando (foco principal)
 
-- [ ] Criar venv em `/opt/vlibras/venv` (`python3 -m venv`).
+- [ ] Criar venv em `/opt/libras2/venv` (`python3 -m venv`).
 - [ ] `pip install -e ./service[all]`.
 - [ ] Baixar V-LIBRASIL pra `data/vlibrasil/` (rodar `scripts/download_vlibrasil.py`).
 - [ ] Subir `uvicorn service.main:app --port 8088` em background.
@@ -94,9 +94,9 @@ RAM) está limpo. O projeto é **greenfield** — `MarxSteel/vlibras` será cria
 
 ### Fase 2 — Produção no `vareni-8`
 
-- [ ] `deploy/systemd/vlibras.service` instalado e habilitado (`systemctl enable --now`).
-- [ ] `journalctl -u vlibras -f` como log padrão.
-- [ ] Cron `0 3 * * * /opt/vlibras/scripts/rotate-cache.sh 7`.
+- [ ] `deploy/systemd/libras2.service` instalado e habilitado (`systemctl enable --now`).
+- [ ] `journalctl -u libras2 -f` como log padrão.
+- [ ] Cron `0 3 * * * /opt/libras2/scripts/rotate-cache.sh 7`.
 - [ ] `scripts/health.sh` com webhook opcional pra alerta.
 - [ ] `Dockerfile` validado (`docker build && docker run`).
 - [ ] **Critério de aceite**: serviço sobrevive a `reboot` do `vareni-8` e responde em < 10s.
@@ -114,7 +114,7 @@ RAM) está limpo. O projeto é **greenfield** — `MarxSteel/vlibras` será cria
 ### Fase 4 — Clientes (paralelo, sob demanda)
 
 - [ ] `clients/n8n-workflow.json` — workflow exemplo: Webhook → translate → responde.
-- [ ] `clients/cli.sh` — `vlibras "bom dia" → /tmp/libras.mp4`.
+- [ ] `clients/cli.sh` — `libras2 "bom dia" → /tmp/libras.mp4`.
 - [ ] `clients/agent.md` — guia pra LLM saber chamar a API via tool/function.
 - [ ] (Opcional) `clients/web/` — frontend estático com form + preview do vídeo.
 - [ ] **Critério de aceite**: agente consegue traduzir usando só a API sem olhar código.
@@ -122,7 +122,7 @@ RAM) está limpo. O projeto é **greenfield** — `MarxSteel/vlibras` será cria
 ## Estrutura de Pastas
 
 ```
-vlibras/
+libras2/
 ├── README.md
 ├── docs/
 │   ├── PLAN.md            ← este arquivo
@@ -146,7 +146,7 @@ vlibras/
 │   └── cli.sh              ← wrapper bash
 ├── deploy/
 │   └── systemd/
-│       └── vlibras.service
+│       └── libras2.service
 ├── scripts/
 │   ├── download_vlibrasil.py
 │   ├── health.sh
@@ -160,9 +160,9 @@ vlibras/
 
 | Risco | Mitigação |
 |---|---|
-| V-LIBRASIL indisponível no Zenodo | Plano B: dataset próprio (gravar 1.3k sinais = 3-6 meses). Plano C: VLibras dictionary-video do `spbgovbr-vlibras` |
+| V-LIBRASIL indisponível no Zenodo | Plano B: dataset próprio (gravar 1.3k sinais = 3-6 meses). Plano C: VLibras dictionary-video do `spbgovbr-libras2` |
 | Vocabulário V-LIBRASIL incompleto | Fallback de datilologia (Fase 3). Usuário pode subir vídeos próprios (`/admin/words`) |
-| RAM do `vareni-8` estourar (8GB) | `MemoryMax=2G` no vlibras. Cache LRU com TTL. Cache em disco, não memória |
+| RAM do `vareni-8` estourar (8GB) | `MemoryMax=2G` no libras2. Cache LRU com TTL. Cache em disco, não memória |
 | ffmpeg concat quebrar com vídeos de tamanhos diferentes | Padronizar resolução 480x360 no V-LIBRASIL; `-c copy` sem reencode (rápido) |
 | Concorrência alta (100+ req/s) | `--workers 4` no uvicorn; fila de processamento com timeout |
 
@@ -174,7 +174,7 @@ vlibras/
 
 ## Status atual
 
-- ✅ Repo local inicializado em `/opt/vlibras` no `vareni-8` (2 commits).
+- ✅ Repo local inicializado em `/opt/libras2` no `vareni-8` (2 commits).
 - ✅ Scaffold sincronizado local + remoto via rsync.
 - ✅ Esqueleto de código escrito.
 - 🔄 **Próximo passo (Fase 1)**: criar venv, instalar deps, baixar V-LIBRASIL, subir API.

@@ -1,4 +1,4 @@
-# Clientes da vlibras API
+# Clientes da libras2 API
 
 A API é o produto. Esses arquivos são **exemplos** de como consumir — não fazem parte
 do core. Adicione o seu (frontend, Slack bot, Telegram, Discord, WhatsApp via Baileys,
@@ -10,7 +10,7 @@ ou qualquer outro) na mesma pasta.
 |---|---|
 | `agent.md` | Guia pra um agente/LLM (como eu) chamar a API via `curl` ou `requests` |
 | `n8n-workflow.json` | Workflow n8n pronto: Webhook → `/translate` → responde com vídeo |
-| `cli.sh` | Wrapper bash pra traduzir direto do terminal: `vlibras "bom dia"` |
+| `cli.sh` | Wrapper bash pra traduzir direto do terminal: `libras2 "bom dia"` |
 
 ## Contrato da API (pra implementar cliente novo)
 
@@ -38,8 +38,8 @@ GET /health
 {
   "status": "ok",
   "vocab_size": 1364,
-  "data_dir": "/opt/vlibras/data/vlibrasil",
-  "cache_dir": "/opt/vlibras/data/cache"
+  "data_dir": "/opt/libras2/data/vlibrasil",
+  "cache_dir": "/opt/libras2/data/cache"
 }
 ```
 

@@ -70,6 +70,6 @@ def main(out_dir: Path) -> int:
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--out", type=Path,
-                   default=Path(__file__).resolve().parents[1] / "data" / "vlibrasil")
+                   default=Path(__file__).resolve().parents[1] / "data" / "vlibrasil")  # nome do dataset, não do projeto
     args = p.parse_args()
     sys.exit(main(args.out))

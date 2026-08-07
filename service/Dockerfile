@@ -16,8 +16,8 @@ RUN pip install --no-cache-dir -e .[all] || pip install --no-cache-dir .
 COPY src/ ./src/
 
 ENV PYTHONUNBUFFERED=1 \
-    VLIBRAS_DATA_DIR=/data/vlibrasil \
-    VLIBRAS_CACHE_DIR=/data/cache
+    LIBRAS2_DATA_DIR=/data/vlibrasil \
+    LIBRAS2_CACHE_DIR=/data/cache
 
 EXPOSE 8088
 

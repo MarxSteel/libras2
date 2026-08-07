@@ -1,5 +1,5 @@
 [project]
-name = "vlibras-service"
+name = "libras2-service"
 version = "0.1.0"
 description = "API que traduz Português para Libras (vídeo/GIF) usando sign-language-translator + V-LIBRASIL"
 requires-python = ">=3.11"

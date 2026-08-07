@@ -1,4 +1,4 @@
-# Guia do Agente — como chamar a vlibras API
+# Guia do Agente — como chamar a libras2 API
 
 Se você é um agente/LLM e precisa traduzir Português → Libras, este arquivo é pra você.
 

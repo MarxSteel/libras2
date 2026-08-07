@@ -1,4 +1,4 @@
-# vlibras
+# libras2
 
 API REST que traduz Português para **Libras** (Língua Brasileira de Sinais) e devolve
 MP4/GIF do sinal.
@@ -17,7 +17,7 @@ frontend, qualquer cliente HTTP.
 
 ```bash
 # no vareni-8
-cd /opt/vlibras
+cd /opt/libras2
 python3 -m venv venv && source venv/bin/activate
 pip install -e ./service[all]
 
@@ -65,7 +65,7 @@ docs/            # PLAN.md, OPERATIONS.md
 
 ## Clientes inclusos
 
-- `clients/cli.sh` — wrapper bash (`vlibras "bom dia"`)
+- `clients/cli.sh` — wrapper bash (`libras2 "bom dia"`)
 - `clients/n8n-workflow.json` — workflow n8n (Webhook → /translate → vídeo)
 - `clients/agent.md` — guia pra LLM chamar via curl/Python
 

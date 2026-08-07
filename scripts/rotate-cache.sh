@@ -3,7 +3,7 @@
 # uso: ./scripts/rotate-cache.sh [dias]
 set -euo pipefail
 
-CACHE=${VLIBRAS_CACHE_DIR:-/opt/vlibras/data/cache}
+CACHE=${LIBRAS2_CACHE_DIR:-/opt/libras2/data/cache}
 DAYS=${1:-7}
 
 if [[ ! -d "$CACHE" ]]; then
