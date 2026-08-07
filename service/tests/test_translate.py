@@ -49,19 +49,36 @@ def test_translate_empty(client):
 
 
 def test_translate_returns_shape(client):
-    """Se o dataset não está presente, a API deve retornar erro estruturado,
-    não crashar. Se está, deve devolver video_url + gloss + missing."""
-    r = client.post("/translate", json={"text": "bom dia", "format": "mp4"})
-    if r.status_code == 200:
+    """/translate?output=gloss retorna arquivo JSON com gloss + missing + backend."""
+    r = client.post("/translate?output=gloss", json={"text": "bom dia", "format": "mp4"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    body = r.json()
+    assert "gloss" in body
+    assert "missing" in body
+    assert "rendered_gloss" in body
+    assert "backend" in body
+
+
+def test_translate_video_requires_dataset(client):
+    """/translate?output=video sem dataset retorna 422."""
+    r = client.post("/translate?output=video", json={"text": "bom dia", "format": "mp4"})
+    assert r.status_code == 422
+
+
+def test_translate_json_legacy(client):
+    """/translate.json retorna o schema antigo pra compat."""
+    with patch("service.vlibras_backend.get_backend") as mock:
+        backend = mock.return_value
+        backend.translate.return_value = ["BOM", "DIA"]
+        r = client.post("/translate.json", json={"text": "bom dia", "format": "mp4"})
+        # Sem dataset: gloss oficial existe, rendered vazio, video_url=""
+        assert r.status_code == 200
         body = r.json()
         assert "video_url" in body
         assert "gloss" in body
         assert "missing" in body
-        assert body["format"] == "mp4"
-        assert "backend" in body
-    else:
-        # Sem dataset ou gloss vazio
-        assert r.status_code in (422, 503)
+        assert body["gloss"] == ["bom", "dia"]
 
 
 def test_glosa_mocked(client):

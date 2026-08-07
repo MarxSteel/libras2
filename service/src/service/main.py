@@ -3,26 +3,29 @@
 Rotas:
   GET  /health
   POST /glosa       usa a API oficial do VLibras pra PT → glosa (uppercase Libras)
-  POST /translate   combina gloss + dataset local de vídeos → MP4/GIF
+  POST /translate   combina gloss + dataset local de vídeos → MP4/GIF/gloss-file
+  POST /translate.json  variante que sempre devolve JSON (compat com schema antigo)
   GET  /signs/{word}
   GET  /vocab
   GET  /videos/{filename}     # serve o MP4/GIF gerado
 
-Backends de tradução:
-  - "local": só dataset local (V-LIBRASIL quando baixado)
-  - "vlibras": chama a API oficial https://traducao2.vlibras.gov.br/translate
-               pra gloss, depois tenta mapear pros vídeos locais
-  - "auto": tenta local primeiro; se gloss vazio, cai pro vlibras
+Query params do /translate (alem do body):
+  ?output=gloss  → retorna arquivo de glosa (sempre funciona, mesmo sem dataset)
+  ?output=video  → retorna MP4
+  ?output=gif    → retorna GIF
+  ?output=auto   (default) → MP4 se tem gloss+mídia, senão arquivo de glosa
+  ?download=true → força Content-Disposition: attachment
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from service.gloss import normalize_pt
@@ -78,6 +81,123 @@ class TranslateResponse(BaseModel):
     note: str | None = None
 
 
+# ---- Helpers ----------------------------------------------------------------
+
+def _resolve_gloss(req: TranslateRequest, t: Translator) -> dict:
+    """Pipeline comum: pega tokens, escolhe backend, devolve dict com:
+      - official_gloss: gloss da API oficial (lowercase, na ordem Libras)
+      - rendered_gloss: subset que tem vídeo no dataset
+      - missing: subset sem vídeo
+      - backend, note
+    """
+    tokens = normalize_pt(req.text)
+    if not tokens:
+        raise HTTPException(400, "empty text after normalization")
+
+    backend_used = req.backend
+    note: str | None = None
+    official_gloss: list[str] = []
+    rendered_gloss: list[str] = []
+    missing: list[str] = []
+
+    if req.backend == "local":
+        rendered_gloss, missing = t.to_gloss(tokens)
+        official_gloss = list(rendered_gloss)
+    elif req.backend == "vlibras":
+        try:
+            raw = get_backend().translate(req.text)
+        except Exception as e:
+            raise HTTPException(503, f"vlibras backend unavailable: {e}")
+        official_gloss = [g.lower() for g in raw]
+        rendered_gloss, missing = [], []
+        for w in official_gloss:
+            (rendered_gloss if w in t.index else missing).append(w)
+    else:  # auto
+        local_present, local_missing = t.to_gloss(tokens)
+        if local_present:
+            official_gloss = list(local_present)
+            rendered_gloss, missing = local_present, local_missing
+        else:
+            try:
+                raw = get_backend().translate(req.text)
+            except Exception as e:
+                logger.warning("vlibras fallback failed: %s", e)
+                raw = []
+            if raw:
+                backend_used = "vlibras"
+                note = "local gloss empty, used vlibras backend"
+                official_gloss = [g.lower() for g in raw]
+                rendered_gloss, missing = [], []
+                for w in official_gloss:
+                    (rendered_gloss if w in t.index else missing).append(w)
+            else:
+                backend_used = "local"
+                note = "no gloss from any backend"
+
+    return {
+        "official_gloss": official_gloss,
+        "rendered_gloss": rendered_gloss,
+        "missing": missing,
+        "backend": backend_used,
+        "note": note,
+    }
+
+
+def _gloss_file_payload(text: str, data: dict) -> dict:
+    """Payload do arquivo de glosa (preserva gloss oficial + info de render)."""
+    return {
+        "text": text,
+        "gloss": data["official_gloss"],
+        "rendered_gloss": data["rendered_gloss"],
+        "missing": data["missing"],
+        "backend": data["backend"],
+        "note": data["note"],
+        "format_version": "libras2-glosa-1",
+    }
+
+
+def _safe_name(s: str) -> str:
+    """Sanitiza string pra virar filename."""
+    keep = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+    out = "".join(c if c in keep else "_" for c in s.strip())[:40]
+    return out or "libras2"
+
+
+def _gloss_response(payload: dict, original: str, download: bool) -> Response:
+    """Retorna o gloss como JSON pra download (application/json)."""
+    body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    fname = f"{_safe_name(original)}.glosa.json"
+    headers = {
+        "X-Libras2-Gloss": " ".join(payload["gloss"]),
+        "X-Libras2-Missing": ",".join(payload["missing"]),
+        "X-Libras2-Backend": payload["backend"],
+    }
+    if payload.get("note"):
+        headers["X-Libras2-Note"] = payload["note"]
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="{fname}"'
+    return Response(content=body, media_type="application/json", headers=headers)
+
+
+def _media_response(
+    path: Path, original: str, download: bool,
+    missing: list[str], rendered: list[str], backend: str, note: str | None,
+) -> FileResponse:
+    """Retorna MP4/GIF como arquivo (inline ou attachment)."""
+    media = "image/gif" if path.suffix == ".gif" else "video/mp4"
+    fname = f"{_safe_name(original)}{path.suffix}"
+    headers = {
+        "X-Libras2-Rendered-Gloss": " ".join(rendered),
+        "X-Libras2-Missing": ",".join(missing),
+        "X-Libras2-Backend": backend,
+    }
+    if note:
+        headers["X-Libras2-Note"] = note
+    disp = "attachment" if download else "inline"
+    headers["Content-Disposition"] = f'{disp}; filename="{fname}"'
+    return FileResponse(path, media_type=media, headers=headers, filename=fname)
+
+
 # ---- Rotas ------------------------------------------------------------------
 
 @app.get("/health")
@@ -115,87 +235,102 @@ def glosa(req: GlosaRequest):
     return GlosaResponse(text=req.text, gloss=gloss, backend="vlibras")
 
 
-@app.post("/translate", response_model=TranslateResponse)
-def translate(req: TranslateRequest):
-    """Pipeline completo: gloss + (concat de vídeos) → MP4/GIF.
+@app.post("/translate")
+def translate(
+    req: TranslateRequest,
+    output: Literal["auto", "gloss", "video", "gif"] = Query("auto"),
+    download: bool = Query(False),
+):
+    """Pipeline completo: gloss + (concat de vídeos) → MP4/GIF/arquivo-de-glosa.
 
-    Backend:
-      - "local": gloss derivado dos tokens normalizados do input
-      - "vlibras": gloss vem da API oficial
-      - "auto": local primeiro, fallback vlibras se gloss vazio
+    Por padrão (output=auto) devolve MP4 se o gloss mapeia pra vídeos no dataset,
+    senão cai pro arquivo de glosa (.json). Use output=gloss pra forçar arquivo de
+    glosa mesmo se houver vídeo. Use output=video/gif pra forçar formato.
     """
-    tokens = normalize_pt(req.text)
-    if not tokens:
-        raise HTTPException(400, "empty text after normalization")
-
     t = get_translator()
-    backend_used = req.backend
-    note: str | None = None
-    gloss: list[str]
-    missing: list[str]
+    data = _resolve_gloss(req, t)
+    official = data["official_gloss"]
+    rendered = data["rendered_gloss"]
+    missing = data["missing"]
+    backend = data["backend"]
+    note = data["note"]
 
-    if req.backend == "local":
-        gloss, missing = t.to_gloss(tokens)
-    elif req.backend == "vlibras":
-        try:
-            official = get_backend().translate(req.text)
-        except Exception as e:
-            raise HTTPException(503, f"vlibras backend unavailable: {e}")
-        gloss = []
-        missing = []
-        for g in official:
-            g_low = g.lower()
-            if g_low in t.index:
-                gloss.append(g_low)
-            else:
-                missing.append(g_low)
-    else:  # auto
-        gloss, missing = t.to_gloss(tokens)
-        if not gloss:
-            try:
-                official = get_backend().translate(req.text)
-            except Exception as e:
-                logger.warning("vlibras fallback failed: %s", e)
-                official = []
-            if official:
-                backend_used = "vlibras"
-                note = "local gloss empty, used vlibras backend"
-                gloss = []
-                missing = []
-                for g in official:
-                    g_low = g.lower()
-                    if g_low in t.index:
-                        gloss.append(g_low)
-                    else:
-                        missing.append(g_low)
-            else:
-                backend_used = "local"
-                note = "no gloss from any backend"
-
-    if not gloss:
+    if not official:
+        # Sem tradução possível em nenhum backend
+        if output == "gloss":
+            return _gloss_response(_gloss_file_payload(req.text, data), req.text, download)
         raise HTTPException(
             422,
-            f"none of the words are in the vocabulary (missing={missing})",
+            f"no gloss from any backend (input: {req.text!r})",
         )
 
-    try:
-        out_path = render(
-            tokens=gloss,
-            data_dir=DATA_DIR,
-            cache_dir=CACHE_DIR,
-            fmt=req.format,
-        )
-    except FileNotFoundError as e:
-        raise HTTPException(422, f"no videos found: {e}")
+    # Tenta gerar mídia usando só rendered_gloss
+    out_path = None
+    if rendered:
+        try:
+            out_path = render(
+                tokens=rendered,
+                data_dir=DATA_DIR,
+                cache_dir=CACHE_DIR,
+                fmt=req.format,
+            )
+        except FileNotFoundError:
+            out_path = None  # sem vídeos pra esse gloss
 
+    # Decide o que devolver
+    if output == "gloss":
+        return _gloss_response(_gloss_file_payload(req.text, data), req.text, download)
+
+    if output == "video":
+        if not out_path or out_path.suffix != ".mp4":
+            raise HTTPException(422, "no MP4 available (missing videos in dataset)")
+        return _media_response(out_path, req.text, download, missing, rendered, backend, note)
+
+    if output == "gif":
+        if rendered:
+            try:
+                gif_path = render(
+                    tokens=rendered, data_dir=DATA_DIR, cache_dir=CACHE_DIR, fmt="gif"
+                )
+            except FileNotFoundError as e:
+                raise HTTPException(422, f"no GIF available: {e}")
+        else:
+            raise HTTPException(422, "no rendered_gloss (all words missing)")
+        return _media_response(gif_path, req.text, download, missing, rendered, backend, note)
+
+    # output == "auto"
+    if out_path:
+        return _media_response(out_path, req.text, download, missing, rendered, backend, note)
+    # cai pro gloss-file (sem vídeo mas tem gloss)
+    return _gloss_response(_gloss_file_payload(req.text, data), req.text, download)
+
+
+@app.post("/translate.json", response_model=TranslateResponse)
+def translate_json(req: TranslateRequest):
+    """Variante que sempre devolve JSON (compat com clientes antigos)."""
+    t = get_translator()
+    data = _resolve_gloss(req, t)
+    if not data["official_gloss"]:
+        raise HTTPException(422, "no gloss from any backend")
+    out_path = None
+    if data["rendered_gloss"]:
+        try:
+            out_path = render(
+                tokens=data["rendered_gloss"],
+                data_dir=DATA_DIR,
+                cache_dir=CACHE_DIR,
+                fmt=req.format,
+            )
+        except FileNotFoundError as e:
+            raise HTTPException(422, str(e))
     return TranslateResponse(
         text=req.text,
-        gloss=gloss,
-        missing=missing,
-        video_url=f"/videos/{out_path.name}",
+        gloss=data["official_gloss"],
+        missing=data["missing"],
+        video_url=f"/videos/{out_path.name}" if out_path else "",
         format=req.format,
-        backend=backend_used,
-        note=note,
+        backend=data["backend"],
+        note=data["note"],
     )
 
 
