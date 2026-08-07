@@ -27,22 +27,54 @@ Devolve `{words: [...], size: N}`. Útil pra saber se a palavra do usuário exis
 
 ## 3. Traduzir
 
+### 3a. Só a glosa (não precisa de dataset, funciona AGORA)
+
+```bash
+curl -sS -X POST http://vareni-8:8088/glosa \
+    -H 'content-type: application/json' \
+    -d '{"text":"bom dia"}'
+```
+
+Resposta (consulta a API oficial do VLibras, com reordenação SOV Libras):
+```json
+{"text":"bom dia","gloss":["BOM","DIA"],"backend":"vlibras"}
+```
+
+Exemplos reais (a API oficial faz supressão de pronomes e escolha de sinônimos):
+
+| Input | Gloss oficial |
+|---|---|
+| `bom dia` | `BOM DIA` |
+| `eu gosto de café com leite` | `GOSTAR CAFE LEITE` |
+| `bom dia, meu nome é Marx` | `MELHOR DIA MEU NOME MARX` |
+
+### 3b. Com vídeo (precisa de dataset local)
+
 ```bash
 curl -sS -X POST http://vareni-8:8088/translate \
     -H 'content-type: application/json' \
     -d '{"text":"bom dia","format":"mp4"}'
 ```
 
-Resposta:
+Resposta (com dataset carregado):
 ```json
 {
   "text": "bom dia",
   "gloss": ["bom", "dia"],
   "missing": [],
   "video_url": "/videos/abc123.mp4",
-  "format": "mp4"
+  "format": "mp4",
+  "backend": "local",
+  "note": null
 }
 ```
+
+Parâmetro `backend`:
+- `"local"` (padrão em modo auto) — usa só dataset local
+- `"vlibras"` — chama API oficial pra gloss, depois tenta mapear pros vídeos
+- `"auto"` — tenta local, cai pra vlibras se gloss vazio
+
+Sem dataset, `/translate` retorna 422 (`missing=[todas palavras]`). Use `/glosa` no lugar.
 
 ## 4. Lidar com palavras ausentes (`missing`)
 

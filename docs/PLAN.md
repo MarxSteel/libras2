@@ -14,9 +14,12 @@ RAM) está limpo. O projeto é **greenfield** — `MarxSteel/libras2` será cria
 
 - **API-first**. O entregável principal é um serviço HTTP stateless. Não amarra em
   WhatsApp, Telegram, ou nenhum cliente. Clientes plugam depois.
-- **`sign-language-translator` + V-LIBRASIL** como motor Libras. Open-source MIT, leve,
-  cabe no `vareni-8` (8GB). Dataset brasileiro (1.364 sinais, UFPE). Trade-off: palavras
-  fora do vocabulário recebem fallback (datilologia soletrada).
+- **Glosa via API oficial do VLibras** (`https://traducao2.vlibras.gov.br/translate`).
+  É a mesma API que o widget do governo usa. Devolve gloss em uppercase com reordenação
+  SOV Libras, supressão de pronomes, escolha de sinônimos. Sem custo, sem GPU, sem instalar
+  nada. Cache em memória LRU 1000 entries.
+- **Vídeo via dataset local** (V-LIBRASIL 1.3k sinais OU manual) — futuro. Por enquanto o
+  `/glosa` já é útil sem o dataset.
 - **FastAPI + uvicorn**. Maturidade, tipagem, `/docs` automático.
 - **ffmpeg** com `-c copy` (sem reencode) pro concat. Cache por hash.
 - **sem GPU**. Funciona em CPU puro.
@@ -25,11 +28,12 @@ RAM) está limpo. O projeto é **greenfield** — `MarxSteel/libras2` será cria
 
 | Opção | Por que não |
 |---|---|
-| VLibras oficial (gov) | Pesado (Node+Python+avatar 3D, 3-4GB RAM), GPU pra render fluente, historicamente problemático de instalar |
+| VLibras oficial self-hosted (Node+Python+avatar 3D) | Pesado (3-4GB RAM), GPU pra render fluente, historicamente problemático de instalar |
 | Avatar gerativo (LivePortrait, AVTR-1) | Não faz **tradução semântica** PT→Libras, só dirige boca a partir de áudio |
 | SignAvatar (PyPI) | Usa Giphy de ASL (American), não serve pra Libras |
-| `sign-language-translator` sem V-LIBRASIL | Sem dataset por padrão, precisa de dados próprios |
+| `sign-language-translator` + datasets PSL/PSK | É pra Paquistão, não Libras |
 | `sign-language-processing/pose-to-video` | Precisa de pose sequences gravadas, muito trabalho manual |
+| sign-language-translator Libras (se houver) | Não existe ainda como dataset público Libras pronto |
 
 ## Arquitetura
 
@@ -56,11 +60,13 @@ RAM) está limpo. O projeto é **greenfield** — `MarxSteel/libras2` será cria
 ### Componentes
 
 1. **`service/`** — API FastAPI em Python.
-   - `POST /translate` body `{"text": "...", "format": "mp4"|"gif"}` → `{gloss, missing, video_url, format}`
-   - `GET /health` → `{status, vocab_size, data_dir, cache_dir}`
-   - `GET /signs/{word}` → MP4 do sinal isolado (debug)
+   - `POST /glosa` body `{"text": "..."}` → `{gloss, backend}` (consulta API oficial VLibras)
+   - `POST /translate` body `{"text": "...", "format": "mp4"|"gif", "backend": "local"|"vlibras"|"auto"}` → `{gloss, missing, video_url, format, backend, note}`
+   - `GET /health` → `{status, vocab_size, data_dir, cache_dir, backends}`
+   - `GET /vocab` → lista as palavras do dataset local
+   - `GET /signs/{word}` → MP4 do sinal isolado (debug, requer dataset)
    - `GET /videos/{filename}` → serve o MP4/GIF do cache
-   - `GET /vocab` → lista as palavras do vocabulário conhecido
+   - `GET /docs` → Swagger UI automático
 2. **`clients/`** — exemplos de consumidores (não fazem parte do core).
    - `agent.md` — guia pra LLM/agente chamar a API
    - `n8n-workflow.json` — workflow de exemplo

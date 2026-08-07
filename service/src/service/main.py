@@ -2,15 +2,24 @@
 
 Rotas:
   GET  /health
-  POST /translate  body: {"text": "...", "format": "mp4"|"gif"}
+  POST /glosa       usa a API oficial do VLibras pra PT → glosa (uppercase Libras)
+  POST /translate   combina gloss + dataset local de vídeos → MP4/GIF
   GET  /signs/{word}
+  GET  /vocab
   GET  /videos/{filename}     # serve o MP4/GIF gerado
+
+Backends de tradução:
+  - "local": só dataset local (V-LIBRASIL quando baixado)
+  - "vlibras": chama a API oficial https://traducao2.vlibras.gov.br/translate
+               pra gloss, depois tenta mapear pros vídeos locais
+  - "auto": tenta local primeiro; se gloss vazio, cai pro vlibras
 """
 from __future__ import annotations
 
 import logging
 import os
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -19,6 +28,7 @@ from pydantic import BaseModel, Field
 from service.gloss import normalize_pt
 from service.translator import Translator
 from service.renderer import render
+from service.vlibras_backend import VLibrasBackend, get_backend
 
 logger = logging.getLogger("libras2")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -29,7 +39,7 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="libras2", version="0.1.0", docs_url="/docs")
 
-# Singleton — instancia uma vez, reusa por request
+# Singletons
 _translator: Translator | None = None
 
 
@@ -40,19 +50,35 @@ def get_translator() -> Translator:
     return _translator
 
 
+# ---- Schemas ----------------------------------------------------------------
+
+class GlosaRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=500)
+
+
+class GlosaResponse(BaseModel):
+    text: str
+    gloss: list[str]
+    backend: str
+
+
 class TranslateRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=500)
     format: str = Field("mp4", pattern="^(mp4|gif)$")
+    backend: Literal["local", "vlibras", "auto"] = Field("auto")
 
 
 class TranslateResponse(BaseModel):
     text: str
     gloss: list[str]
-    missing: list[str]            # palavras sem vídeo no dicionário
+    missing: list[str]
     video_url: str
     format: str
-    duration_ms: int
+    backend: str
+    note: str | None = None
 
+
+# ---- Rotas ------------------------------------------------------------------
 
 @app.get("/health")
 def health():
@@ -63,42 +89,119 @@ def health():
         "vocab_size": t.vocab_size,
         "data_dir": str(DATA_DIR),
         "cache_dir": str(CACHE_DIR),
+        "backends": {"local": True, "vlibras": True},
     }
+
+
+@app.get("/vocab")
+def vocab():
+    """Lista palavras do dataset local."""
+    t = get_translator()
+    return {"words": sorted(t.index.keys()), "size": t.vocab_size}
+
+
+@app.post("/glosa", response_model=GlosaResponse)
+def glosa(req: GlosaRequest):
+    """Traduz PT → glosa usando a API oficial do VLibras.
+
+    Não precisa de dataset local. Útil pra integrar Libras em outros sistemas
+    sem ainda ter o dataset de vídeos.
+    """
+    try:
+        gloss = get_backend().translate(req.text)
+    except Exception as e:
+        raise HTTPException(503, f"vlibras backend unavailable: {e}")
+
+    return GlosaResponse(text=req.text, gloss=gloss, backend="vlibras")
 
 
 @app.post("/translate", response_model=TranslateResponse)
 def translate(req: TranslateRequest):
+    """Pipeline completo: gloss + (concat de vídeos) → MP4/GIF.
+
+    Backend:
+      - "local": gloss derivado dos tokens normalizados do input
+      - "vlibras": gloss vem da API oficial
+      - "auto": local primeiro, fallback vlibras se gloss vazio
+    """
     tokens = normalize_pt(req.text)
     if not tokens:
         raise HTTPException(400, "empty text after normalization")
 
     t = get_translator()
-    gloss, missing = t.to_gloss(tokens)
+    backend_used = req.backend
+    note: str | None = None
+    gloss: list[str]
+    missing: list[str]
+
+    if req.backend == "local":
+        gloss, missing = t.to_gloss(tokens)
+    elif req.backend == "vlibras":
+        try:
+            official = get_backend().translate(req.text)
+        except Exception as e:
+            raise HTTPException(503, f"vlibras backend unavailable: {e}")
+        gloss = []
+        missing = []
+        for g in official:
+            g_low = g.lower()
+            if g_low in t.index:
+                gloss.append(g_low)
+            else:
+                missing.append(g_low)
+    else:  # auto
+        gloss, missing = t.to_gloss(tokens)
+        if not gloss:
+            try:
+                official = get_backend().translate(req.text)
+            except Exception as e:
+                logger.warning("vlibras fallback failed: %s", e)
+                official = []
+            if official:
+                backend_used = "vlibras"
+                note = "local gloss empty, used vlibras backend"
+                gloss = []
+                missing = []
+                for g in official:
+                    g_low = g.lower()
+                    if g_low in t.index:
+                        gloss.append(g_low)
+                    else:
+                        missing.append(g_low)
+            else:
+                backend_used = "local"
+                note = "no gloss from any backend"
+
     if not gloss:
         raise HTTPException(
             422,
             f"none of the words are in the vocabulary (missing={missing})",
         )
 
-    out_path = render(
-        tokens=gloss,
-        data_dir=DATA_DIR,
-        cache_dir=CACHE_DIR,
-        fmt=req.format,
-    )
+    try:
+        out_path = render(
+            tokens=gloss,
+            data_dir=DATA_DIR,
+            cache_dir=CACHE_DIR,
+            fmt=req.format,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(422, f"no videos found: {e}")
+
     return TranslateResponse(
         text=req.text,
         gloss=gloss,
         missing=missing,
         video_url=f"/videos/{out_path.name}",
         format=req.format,
-        duration_ms=int(out_path.stat().st_mtime * 1000) - int(out_path.stat().st_mtime * 1000),
+        backend=backend_used,
+        note=note,
     )
 
 
 @app.get("/signs/{word}")
 def get_sign(word: str):
-    """Debug: retorna o vídeo isolado de uma palavra."""
+    """Debug: retorna o vídeo isolado de uma palavra (dataset local)."""
     word = word.lower()
     t = get_translator()
     path = t.lookup_video(word)

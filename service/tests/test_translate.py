@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,6 +32,15 @@ def test_health(client):
     body = r.json()
     assert body["status"] == "ok"
     assert "vocab_size" in body
+    assert body["backends"]["vlibras"] is True
+
+
+def test_vocab(client):
+    r = client.get("/vocab")
+    assert r.status_code == 200
+    body = r.json()
+    assert "words" in body
+    assert "size" in body
 
 
 def test_translate_empty(client):
@@ -48,9 +58,22 @@ def test_translate_returns_shape(client):
         assert "gloss" in body
         assert "missing" in body
         assert body["format"] == "mp4"
+        assert "backend" in body
     else:
         # Sem dataset ou gloss vazio
         assert r.status_code in (422, 503)
+
+
+def test_glosa_mocked(client):
+    """Com a API do VLibras mockada, /glosa devolve a glosa direto."""
+    with patch("service.vlibras_backend.get_backend") as mock:
+        backend = mock.return_value
+        backend.translate.return_value = ["BOM", "DIA"]
+        r = client.post("/glosa", json={"text": "bom dia"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["gloss"] == ["BOM", "DIA"]
+        assert body["backend"] == "vlibras"
 
 
 def test_normalize_pt_strips_accents():
@@ -59,3 +82,20 @@ def test_normalize_pt_strips_accents():
     assert normalize_pt("  Olá, MUNDO!  ") == ["ola", "mundo"]
     assert normalize_pt("") == []
     assert normalize_pt("ação") == ["acao"]
+
+
+def test_translate_with_vlibras_backend_mocked(client):
+    """Com a API do VLibras mockada, /translate com backend=vlibras devolve gloss
+    e missing (vai estar missing pq vocab=0)."""
+    with patch("service.vlibras_backend.get_backend") as mock:
+        backend = mock.return_value
+        backend.translate.return_value = ["BOM", "DIA"]
+        r = client.post("/translate", json={
+            "text": "bom dia", "format": "mp4", "backend": "vlibras",
+        })
+        # Sem dataset, gloss existe mas missing tudo → 422
+        if r.status_code == 200:
+            body = r.json()
+            assert body["backend"] == "vlibras"
+        else:
+            assert r.status_code == 422

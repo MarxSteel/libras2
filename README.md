@@ -1,7 +1,7 @@
 # libras2
 
 API REST que traduz Português para **Libras** (Língua Brasileira de Sinais) e devolve
-MP4/GIF do sinal.
+glosa + (opcionalmente) MP4/GIF do sinal.
 
 API-first. Sem amarração a nenhum canal. Pode ser consumida por agente, n8n, CLI,
 frontend, qualquer cliente HTTP.
@@ -9,8 +9,8 @@ frontend, qualquer cliente HTTP.
 ## Stack
 
 - **API**: FastAPI + uvicorn
-- **Motor Libras**: [`sign-language-translator`](https://github.com/sign-language-translator/sign-language-translator) + dataset V-LIBRASIL
-- **Concat de vídeo**: ffmpeg
+- **Glosa**: API oficial do VLibras (`traducao2.vlibras.gov.br/translate`) — já integrada
+- **Vídeo (opcional)**: dataset local (V-LIBRASIL) + ffmpeg concat
 - **Hospedagem**: bare-metal no `vareni-8` (Ubuntu 24.04, 8GB RAM)
 
 ## Quickstart
@@ -38,12 +38,22 @@ curl -X POST http://127.0.0.1:8088/translate \
 
 | Método | Path | Descrição |
 |---|---|---|
-| GET  | `/health` | Status + tamanho do vocabulário |
-| GET  | `/vocab` | Lista de palavras conhecidas |
-| GET  | `/signs/{word}` | MP4 do sinal isolado (debug) |
-| POST | `/translate` | `{"text","format"}` → `{gloss, missing, video_url, format}` |
+| GET  | `/health` | Status + tamanho do vocabulário local |
+| GET  | `/vocab` | Lista de palavras do dataset local |
+| POST | `/glosa` | `{"text"}` → `{gloss, backend}` (chama API oficial VLibras) |
+| POST | `/translate` | `{"text","format","backend"}` → `{gloss, missing, video_url, ...}` |
+| GET  | `/signs/{word}` | MP4 do sinal isolado (debug, requer dataset) |
 | GET  | `/videos/{filename}` | Serve MP4/GIF do cache |
 | GET  | `/docs` | Swagger UI automático |
+
+**Backends de tradução** (no `/translate`):
+- `local` — gloss derivado dos tokens normalizados do input (precisa de dataset)
+- `vlibras` — gloss vem da API oficial `traducao2.vlibras.gov.br`
+- `auto` (default) — tenta local primeiro, cai pra vlibras se gloss vazio
+
+**`/glosa` funciona agora** sem nenhum dataset — usa a API oficial do VLibras e devolve a glosa real com reordenação SOV Libras.
+
+**`/translate` precisa de dataset local** pra gerar vídeo. Sem o dataset, retorna gloss + lista `missing` (você pode usar a glosa direto via `/glosa`).
 
 ## Estrutura
 

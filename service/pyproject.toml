@@ -9,7 +9,9 @@ dependencies = [
     "pydantic>=2.9",
     "httpx>=0.27",
     "Pillow>=10.4",
-    "sign-language-translator[all] @ git+https://github.com/sign-language-translator/sign-language-translator.git",
+    # sign-language-translator é opcional: o translator.py atual é stub funcional.
+    # Pra usar de verdade: pip install sign-language-translator[all] @ git+https://...
+    # "sign-language-translator[all] @ git+https://github.com/sign-language-translator/sign-language-translator.git",
 ]
 
 [project.optional-dependencies]
