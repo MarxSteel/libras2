@@ -1,0 +1,139 @@
+{
+  "name": "vlibras — Webhook to Libras video",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "libras",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-in",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 300],
+      "webhookId": "vlibras-in"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.body.text}}",
+              "operation": "exists",
+              "value2": ""
+            }
+          ]
+        }
+      },
+      "id": "if-has-text",
+      "name": "Tem text?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8088/translate",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {"name": "text", "value": "={{$json.body.text}}"},
+            {"name": "format", "value": "mp4"}
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "translate",
+      "name": "POST /translate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [600, 200]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://127.0.0.1:8088{{$json.video_url}}",
+        "responseFormat": "file",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "fetch-video",
+      "name": "GET /videos/<file>",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [800, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "responseBody": "={{$binary}}",
+        "options": {
+          "responseHeaders": {
+            "parameters": [
+              {"name": "Content-Type", "value": "video/mp4"},
+              {"name": "X-Vlibras-Gloss", "value": "={{$node[\"POST /translate\"].json[\"gloss\"].join(\" \")}}"},
+              {"name": "X-Vlibras-Missing", "value": "={{$node[\"POST /translate\"].json[\"missing\"].join(\",\")}}"}
+            ]
+          }
+        }
+      },
+      "id": "respond-video",
+      "name": "Respond video",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1000, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"error\": \"missing 'text' in body\"}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-bad",
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [600, 420]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{"node": "Tem text?", "type": "main", "index": 0}]]
+    },
+    "Tem text?": {
+      "main": [
+        [{"node": "POST /translate", "type": "main", "index": 0}],
+        [{"node": "Respond 400", "type": "main", "index": 0}]
+      ]
+    },
+    "POST /translate": {
+      "main": [[{"node": "GET /videos/<file>", "type": "main", "index": 0}]]
+    },
+    "GET /videos/<file>": {
+      "main": [[{"node": "Respond video", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1"
+}

@@ -8,11 +8,9 @@
 
 # ver logs em tempo real
 journalctl -u vlibras -f
-journalctl --user -u hermes-gateway -f
 
 # reiniciar
 sudo systemctl restart vlibras
-hermes gateway restart
 ```
 
 ## Onde fica cada coisa no `vareni-8`
@@ -21,21 +19,18 @@ hermes gateway restart
 |---|---|
 | Repo | `/opt/vlibras` |
 | API (FastAPI) | `127.0.0.1:8088` |
-| Hermes gateway | `~/.hermes/` (user service) |
 | Dataset V-LIBRASIL | `/opt/vlibras/data/vlibrasil/videos/` |
 | Cache de vídeos gerados | `/opt/vlibras/data/cache/` |
-| Logs Libras | `journalctl -u vlibras` |
-| Logs WhatsApp | `journalctl --user -u hermes-gateway` |
-| Mídia baixada pela skill | `/tmp/vlibras-media/` |
+| Logs | `journalctl -u vlibras` |
+| Swagger UI | `http://vareni-8:8088/docs` |
 
 ## Procedimentos
 
-### Reiniciar tudo depois de uma mudança
+### Reiniciar a API
 
 ```bash
 sudo systemctl restart vlibras
 sleep 2
-hermes gateway restart
 ./scripts/health.sh
 ```
 
@@ -48,28 +43,6 @@ O V-LIBRASIL não cobre todas as palavras. Para adicionar:
 3. Sem acento no nome da pasta (ex: `agua`, não `água`).
 4. `sudo systemctl restart vlibras` (recarrega índice).
 5. Teste: `curl -X POST http://127.0.0.1:8088/translate -d '{"text":"..."}'`
-
-### Quando o WhatsApp desconecta
-
-Sintoma: o bot para de responder.
-
-```bash
-hermes whatsapp status
-# se mostrar "disconnected":
-hermes whatsapp relink   # novo QR code aparece no terminal
-# escaneie com WhatsApp > Aparelhos conectados > Conectar um aparelho
-```
-
-Causa comum: bateria do celular acabou, ou o WhatsApp Web expirou (90 dias de inatividade).
-
-### Banimento do número
-
-O Baileys emula o WhatsApp Web. Se você mandar muito spam ou o Meta sinalizar uso indevido, o número pode ser banido. Mitigações:
-
-- Use um **número dedicado** (chip separado) só pro bot.
-- Responda só para números na whitelist (`WHATSAPP_ALLOWED_USERS`).
-- Evite mensagens em massa.
-- Se banido, recorra em https://www.whatsapp.com/contact/?subject=banido ou troque de número.
 
 ### Disco cheio
 
@@ -100,11 +73,40 @@ Possíveis culpados:
 - ffmpeg travado em uma frase muito longa.
 - Cache sem rotação.
 
+### Substituir o dataset V-LIBRASIL
+
+```bash
+sudo systemctl stop vlibras
+rm -rf /opt/vlibras/data/vlibrasil
+python /opt/vlibras/scripts/download_vlibrasil.py
+sudo systemctl start vlibras
+./scripts/health.sh
+```
+
+### Validar uma frase sem subir o servidor
+
+```bash
+source /opt/vlibras/venv/bin/activate
+python -c "
+import sys; sys.path.insert(0, '/opt/vlibras/service/src')
+from service.translator import Translator
+from service.gloss import normalize_pt
+t = Translator(data_dir=__import__('pathlib').Path('/opt/vlibras/data/vlibrasil'))
+text = 'bom dia'
+tokens = normalize_pt(text)
+gloss, missing = t.to_gloss(tokens)
+print(f'tokens={tokens}')
+print(f'gloss={gloss}')
+print(f'missing={missing}')
+"
+```
+
 ## Métricas pra olhar
 
 - Latência `/translate`: `journalctl -u vlibras | grep translate | tail`
-- Falhas de API: `journalctl -u vlibras | grep -c ERROR`
-- Fila do cache: `ls /opt/vlibras/data/cache | wc -l`
+- Falhas: `journalctl -u vlibras | grep -c ERROR`
+- Tamanho do cache: `du -sh /opt/vlibras/data/cache`
+- Tamanho do vocabulário: `curl -s http://127.0.0.1:8088/health | jq .vocab_size`
 - Memória: `systemctl status vlibras` (linha `Memory:`)
 
 ## Backups
@@ -112,7 +114,5 @@ Possíveis culpados:
 O que vale a pena fazer backup (o resto é regenerável):
 
 - `data/vlibrasil/` — dataset, ~3GB. Se perdeu, rebaixe via `scripts/download_vlibrasil.py`.
-- `~/.hermes/whatsapp/` — credencial do Baileys. Se perdeu, vai ter que re-escanear QR.
-- `~/.hermes/memory/` — histórico. Se perdeu, o bot esquece contatos.
 
-Sugestão: `borg backup` ou `restic` pro `/opt/vlibras/data/vlibrasil` + `~/.hermes/whatsapp`. Diário, retenção 7d.
+Sugestão: `borg backup` ou `restic` pro `/opt/vlibras/data/vlibrasil`. Diário, retenção 7d.
