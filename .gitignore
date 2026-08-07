@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Data / runtime
+data/raw/
+data/cache/
+data/output/
+*.mp4
+*.gif
+*.webm
+!docs/assets/*.gif
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Node (Hermes skill helpers)
+node_modules/
+package-lock.json
+
+# Logs
+*.log
+logs/
