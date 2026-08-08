@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>libras2 player</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; font: 14px/1.4 -apple-system, system-ui, sans-serif;
+           background: #0a0a0a; color: #e0e0e0; }
+    header { padding: 12px 20px; border-bottom: 1px solid #222; display: flex;
+             align-items: center; gap: 16px; flex-wrap: wrap; }
+    h1 { font-size: 14px; margin: 0; font-weight: 600; }
+    .gloss { background: #1a1a1a; padding: 4px 10px; border-radius: 4px;
+             font-family: ui-monospace, monospace; font-size: 12px; color: #7af; }
+    .controls { display: flex; gap: 8px; margin-left: auto; }
+    button { background: #1f6feb; color: white; border: 0; padding: 6px 14px;
+             border-radius: 4px; cursor: pointer; font-size: 13px; }
+    button:hover { background: #2680ff; }
+    button:disabled { background: #333; color: #666; cursor: not-allowed; }
+    #stage { display: flex; align-items: center; justify-content: center;
+             height: calc(100vh - 60px); background: radial-gradient(circle at center, #1a1a2a, #050505); }
+    canvas { display: block; max-width: 100%; max-height: 100%; }
+    #status { position: absolute; bottom: 12px; left: 12px; font-size: 11px;
+              color: #888; background: rgba(0,0,0,0.6); padding: 4px 8px;
+              border-radius: 3px; font-family: ui-monospace, monospace; }
+    #counter { position: absolute; top: 12px; right: 12px; font-size: 11px;
+               color: #888; background: rgba(0,0,0,0.6); padding: 4px 8px;
+               border-radius: 3px; font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🤟 libras2</h1>
+    <span class="gloss" id="gloss-display">—</span>
+    <div class="controls">
+      <button id="btn-replay" disabled>↻ Replay</button>
+      <button id="btn-slow">0.5×</button>
+    </div>
+  </header>
+  <div id="stage">
+    <div id="status">carregando three.js…</div>
+    <div id="counter"></div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+    const params = new URLSearchParams(location.search);
+    // gloss: vírgula-separado (vem do backend, já tratado pra URL)
+    // ou text: texto PT que vai ser traduzido via /glosa primeiro
+    const GLOSS = (params.get('gloss') || '').split(',').filter(Boolean);
+    const TEXT = params.get('text') || '';
+    const API = params.get('api') || `${location.origin}`;
+
+    const $status = document.getElementById('status');
+    const $gloss = document.getElementById('gloss-display');
+    const $counter = document.getElementById('counter');
+    const $replay = document.getElementById('btn-replay');
+    const $slow = document.getElementById('btn-slow');
+
+    let speed = 1.0;
+    $slow.addEventListener('click', () => {
+      speed = speed === 1.0 ? 0.5 : speed === 0.5 ? 0.25 : 1.0;
+      $slow.textContent = `${speed}×`;
+    });
+
+    // scene
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+    camera.position.set(0, 1.4, 4.2);
+    camera.lookAt(0, 1.2, 0);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dl = new THREE.DirectionalLight(0xffffff, 1.0);
+    dl.position.set(2, 4, 3); scene.add(dl);
+
+    let renderer;
+    let currentMixer = null;
+    let currentGLTF = null;
+    let currentAction = null;
+    let playing = false;
+    let aborted = false;
+
+    function makeRenderer() {
+      const stage = document.getElementById('stage');
+      const w = stage.clientWidth, h = stage.clientHeight;
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(w, h);
+      stage.appendChild(renderer.domElement);
+      window.addEventListener('resize', () => {
+        const w = stage.clientWidth, h = stage.clientHeight;
+        camera.aspect = w / h; camera.updateProjectionMatrix();
+        renderer.setSize(w, h);
+      });
+    }
+
+    function clearCurrent() {
+      if (currentMixer) { currentMixer.stopAllAction(); currentMixer = null; }
+      if (currentGLTF?.scene) {
+        scene.remove(currentGLTF.scene);
+        currentGLTF.scene.traverse((o) => {
+          if (o.geometry) o.geometry.dispose?.();
+          if (o.material) {
+            const m = o.material;
+            (Array.isArray(m) ? m : [m]).forEach((mm) => mm.dispose?.());
+          }
+        });
+        currentGLTF = null;
+      }
+      currentAction = null;
+    }
+
+    async function fetchGlossList() {
+      if (GLOSS.length) return GLOSS;
+      if (!TEXT) { $status.textContent = 'passe ?gloss=BOM,DIA ou ?text=bom+dia'; return []; }
+      $status.textContent = `traduzindo "${TEXT}" via /glosa…`;
+      const r = await fetch(`${API}/glosa`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: TEXT }),
+      });
+      if (!r.ok) throw new Error(`/glosa ${r.status}`);
+      const j = await r.json();
+      return j.gloss || [];
+    }
+
+    async function playOne(word) {
+      return new Promise((resolve, reject) => {
+        const loader = new GLTFLoader();
+        const url = `${API}/signs/${encodeURIComponent(word)}/glb`;
+        $status.textContent = `carregando "${word}"…`;
+        loader.load(url, (gltf) => {
+          clearCurrent();
+          currentGLTF = gltf;
+          // centraliza e normaliza
+          const box = new THREE.Box3().setFromObject(gltf.scene);
+          const size = box.getSize(new THREE.Vector3());
+          const center = box.getCenter(new THREE.Vector3());
+          gltf.scene.position.sub(center).setY(-center.y + size.y / 2);
+          // escala se for muito grande
+          const maxDim = Math.max(size.x, size.y, size.z);
+          if (maxDim > 3) gltf.scene.scale.setScalar(3 / maxDim);
+          scene.add(gltf.scene);
+
+          currentMixer = new THREE.AnimationMixer(gltf.scene);
+          if (gltf.animations && gltf.animations.length) {
+            currentAction = currentMixer.clipAction(gltf.animations[0]);
+            currentAction.setEffectiveTimeScale(speed);
+            currentAction.reset().play();
+          }
+          playing = true;
+          const clock = new THREE.Clock();
+          function tick() {
+            if (aborted) return resolve();
+            if (currentMixer) currentMixer.update(clock.getDelta());
+            renderer.render(scene, camera);
+            if (currentAction && currentAction.isRunning() === false) return resolve();
+            requestAnimationFrame(tick);
+          }
+          tick();
+        }, undefined, (err) => {
+          reject(new Error(`falha ao carregar "${word}": ${err?.message || err}`));
+        });
+      });
+    }
+
+    async function playAll(list) {
+      if (!list.length) {
+        $status.textContent = 'nenhum glosa pra reproduzir';
+        return;
+      }
+      $gloss.textContent = list.join(' · ');
+      $replay.disabled = false;
+      aborted = false;
+      for (let i = 0; i < list.length; i++) {
+        $counter.textContent = `${i + 1}/${list.length}`;
+        try {
+          await playOne(list[i]);
+        } catch (e) {
+          console.error(e);
+          $status.textContent = `erro: ${e.message} (pulando)`;
+          await new Promise((r) => setTimeout(r, 600));
+        }
+      }
+      $counter.textContent = `fim (${list.length}/${list.length})`;
+      $status.textContent = 'concluído';
+      playing = false;
+    }
+
+    $replay.addEventListener('click', async () => {
+      const list = await fetchGlossList();
+      playAll(list);
+    });
+
+    async function main() {
+      try {
+        makeRenderer();
+        const list = await fetchGlossList();
+        if (!list.length) return;
+        $status.textContent = `pronto (${list.length} sinais)`;
+        playAll(list);
+      } catch (e) {
+        $status.textContent = `erro: ${e.message}`;
+        console.error(e);
+      }
+    }
+    main();
+  </script>
+</body>
+</html>

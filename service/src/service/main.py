@@ -5,16 +5,19 @@ Rotas:
   POST /glosa       usa a API oficial do VLibras pra PT → glosa (uppercase Libras)
   POST /translate   combina gloss + dataset local de vídeos → MP4/GIF/gloss-file
   POST /translate.json  variante que sempre devolve JSON (compat com schema antigo)
-  GET  /signs/{word}
+  GET  /signs/{word}/glb  serve o .glb (animação 3D) do dicionário oficial, com cache
+  GET  /signs/{word}/info metadata do sinal (existe? formato? tamanho?)
+  GET  /signs/play?gloss=BOM,DIA   player HTML com three.js que renderiza sequência
+  GET  /signs/play?text=bom+dia   idem, mas faz /glosa primeiro
   GET  /vocab
-  GET  /videos/{filename}     # serve o MP4/GIF gerado
+  GET  /videos/{filename}     # serve o MP4/GIF gerado (legacy, sem dataset agora)
 
-Query params do /translate (alem do body):
-  ?output=gloss  → retorna arquivo de glosa (sempre funciona, mesmo sem dataset)
-  ?output=video  → retorna MP4
-  ?output=gif    → retorna GIF
-  ?output=auto   (default) → MP4 se tem gloss+mídia, senão arquivo de glosa
-  ?download=true → força Content-Disposition: attachment
+Query params do /translate:
+  ?output=gloss  → arquivo .glosa.json (sempre funciona)
+  ?output=video  → redireciona pro /signs/play com o gloss
+  ?output=gif    → idem video
+  ?output=auto   (default) → video se dicionário OK, senão gloss
+  ?download=true → attachment
 """
 from __future__ import annotations
 
@@ -23,24 +26,28 @@ import logging
 import os
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from service.gloss import normalize_pt
 from service.translator import Translator
-from service.renderer import render
+from service.renderer import render as render_video  # legacy concat MP4 (sem dataset por enquanto)
+from service.renderer_text import render as render_text_video  # NOVO: gera MP4/GIF a partir de gloss
 from service.vlibras_backend import VLibrasBackend, get_backend
+from service.dictionary import Dictionary, get_dictionary
 
 logger = logging.getLogger("libras2")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 DATA_DIR = Path(os.getenv("LIBRAS2_DATA_DIR", "/opt/libras2/data/vlibrasil"))
 CACHE_DIR = Path(os.getenv("LIBRAS2_CACHE_DIR", "/opt/libras2/data/cache"))
+STATIC_DIR = Path(os.getenv("LIBRAS2_STATIC_DIR", "/opt/libras2/service/static"))
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="libras2", version="0.1.0", docs_url="/docs")
+app = FastAPI(title="libras2", version="0.2.0", docs_url="/docs")
 
 # Singletons
 _translator: Translator | None = None
@@ -86,8 +93,8 @@ class TranslateResponse(BaseModel):
 def _resolve_gloss(req: TranslateRequest, t: Translator) -> dict:
     """Pipeline comum: pega tokens, escolhe backend, devolve dict com:
       - official_gloss: gloss da API oficial (lowercase, na ordem Libras)
-      - rendered_gloss: subset que tem vídeo no dataset
-      - missing: subset sem vídeo
+      - rendered_gloss: subset que tem sinal no dataset OU no dicionário
+      - missing: subset sem sinal
       - backend, note
     """
     tokens = normalize_pt(req.text)
@@ -100,6 +107,13 @@ def _resolve_gloss(req: TranslateRequest, t: Translator) -> dict:
     rendered_gloss: list[str] = []
     missing: list[str] = []
 
+    # se tem dicionário online, considera ele como fonte de "tem sinal"
+    dict_lookup = get_dictionary()
+    def in_dataset_or_dict(w: str) -> bool:
+        if w in t.index:
+            return True
+        return dict_lookup.has_sign(w)
+
     if req.backend == "local":
         rendered_gloss, missing = t.to_gloss(tokens)
         official_gloss = list(rendered_gloss)
@@ -111,7 +125,7 @@ def _resolve_gloss(req: TranslateRequest, t: Translator) -> dict:
         official_gloss = [g.lower() for g in raw]
         rendered_gloss, missing = [], []
         for w in official_gloss:
-            (rendered_gloss if w in t.index else missing).append(w)
+            (rendered_gloss if in_dataset_or_dict(w) else missing).append(w)
     else:  # auto
         local_present, local_missing = t.to_gloss(tokens)
         if local_present:
@@ -129,7 +143,7 @@ def _resolve_gloss(req: TranslateRequest, t: Translator) -> dict:
                 official_gloss = [g.lower() for g in raw]
                 rendered_gloss, missing = [], []
                 for w in official_gloss:
-                    (rendered_gloss if w in t.index else missing).append(w)
+                    (rendered_gloss if in_dataset_or_dict(w) else missing).append(w)
             else:
                 backend_used = "local"
                 note = "no gloss from any backend"
@@ -144,7 +158,6 @@ def _resolve_gloss(req: TranslateRequest, t: Translator) -> dict:
 
 
 def _gloss_file_payload(text: str, data: dict) -> dict:
-    """Payload do arquivo de glosa (preserva gloss oficial + info de render)."""
     return {
         "text": text,
         "gloss": data["official_gloss"],
@@ -157,14 +170,12 @@ def _gloss_file_payload(text: str, data: dict) -> dict:
 
 
 def _safe_name(s: str) -> str:
-    """Sanitiza string pra virar filename."""
     keep = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
     out = "".join(c if c in keep else "_" for c in s.strip())[:40]
     return out or "libras2"
 
 
 def _gloss_response(payload: dict, original: str, download: bool) -> Response:
-    """Retorna o gloss como JSON pra download (application/json)."""
     body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     fname = f"{_safe_name(original)}.glosa.json"
     headers = {
@@ -198,40 +209,42 @@ def _media_response(
     return FileResponse(path, media_type=media, headers=headers, filename=fname)
 
 
+def _player_url(req: TranslateRequest, data: dict) -> str:
+    """Monta a URL do player pra /translate?output=video."""
+    gloss_q = ",".join(data["rendered_gloss"] or data["official_gloss"])
+    return f"/signs/play?gloss={quote(gloss_q)}&from=text&text={quote(req.text)}"
+
+
 # ---- Rotas ------------------------------------------------------------------
 
 @app.get("/health")
 def health():
-    """Liveness + readiness rápido."""
     t = get_translator()
     return {
         "status": "ok",
         "vocab_size": t.vocab_size,
         "data_dir": str(DATA_DIR),
         "cache_dir": str(CACHE_DIR),
-        "backends": {"local": True, "vlibras": True},
+        "backends": {"local": True, "vlibras": True, "dictionary": True},
+        "dictionary": {
+            "version": get_dictionary().version,
+            "platform": get_dictionary().platform,
+        },
     }
 
 
 @app.get("/vocab")
 def vocab():
-    """Lista palavras do dataset local."""
     t = get_translator()
     return {"words": sorted(t.index.keys()), "size": t.vocab_size}
 
 
 @app.post("/glosa", response_model=GlosaResponse)
 def glosa(req: GlosaRequest):
-    """Traduz PT → glosa usando a API oficial do VLibras.
-
-    Não precisa de dataset local. Útil pra integrar Libras em outros sistemas
-    sem ainda ter o dataset de vídeos.
-    """
     try:
         gloss = get_backend().translate(req.text)
     except Exception as e:
         raise HTTPException(503, f"vlibras backend unavailable: {e}")
-
     return GlosaResponse(text=req.text, gloss=gloss, backend="vlibras")
 
 
@@ -241,12 +254,6 @@ def translate(
     output: Literal["auto", "gloss", "video", "gif"] = Query("auto"),
     download: bool = Query(False),
 ):
-    """Pipeline completo: gloss + (concat de vídeos) → MP4/GIF/arquivo-de-glosa.
-
-    Por padrão (output=auto) devolve MP4 se o gloss mapeia pra vídeos no dataset,
-    senão cai pro arquivo de glosa (.json). Use output=gloss pra forçar arquivo de
-    glosa mesmo se houver vídeo. Use output=video/gif pra forçar formato.
-    """
     t = get_translator()
     data = _resolve_gloss(req, t)
     official = data["official_gloss"]
@@ -256,98 +263,124 @@ def translate(
     note = data["note"]
 
     if not official:
-        # Sem tradução possível em nenhum backend
         if output == "gloss":
             return _gloss_response(_gloss_file_payload(req.text, data), req.text, download)
-        raise HTTPException(
-            422,
-            f"no gloss from any backend (input: {req.text!r})",
+        raise HTTPException(422, f"no gloss from any backend (input: {req.text!r})")
+
+    # output=video|gif → gera MP4/GIF visual a partir da glosa (sempre funciona)
+    if output in ("video", "gif"):
+        if not official:
+            raise HTTPException(422, "no gloss to render")
+        try:
+            out_path = render_text_video(
+                text=req.text,
+                gloss=official,
+                cache_dir=CACHE_DIR,
+                fmt=req.format if output == "video" else "gif",
+            )
+        except Exception as e:
+            logger.exception("render_text_video failed")
+            raise HTTPException(500, f"renderer error: {e}")
+        return _media_response(
+            out_path, req.text, download,
+            data["missing"], data["rendered_gloss"] or data["official_gloss"],
+            backend, note,
         )
 
-    # Tenta gerar mídia usando só rendered_gloss
-    out_path = None
-    if rendered:
-        try:
-            out_path = render(
-                tokens=rendered,
-                data_dir=DATA_DIR,
-                cache_dir=CACHE_DIR,
-                fmt=req.format,
-            )
-        except FileNotFoundError:
-            out_path = None  # sem vídeos pra esse gloss
-
-    # Decide o que devolver
     if output == "gloss":
         return _gloss_response(_gloss_file_payload(req.text, data), req.text, download)
 
-    if output == "video":
-        if not out_path or out_path.suffix != ".mp4":
-            raise HTTPException(422, "no MP4 available (missing videos in dataset)")
-        return _media_response(out_path, req.text, download, missing, rendered, backend, note)
-
-    if output == "gif":
-        if rendered:
-            try:
-                gif_path = render(
-                    tokens=rendered, data_dir=DATA_DIR, cache_dir=CACHE_DIR, fmt="gif"
-                )
-            except FileNotFoundError as e:
-                raise HTTPException(422, f"no GIF available: {e}")
-        else:
-            raise HTTPException(422, "no rendered_gloss (all words missing)")
-        return _media_response(gif_path, req.text, download, missing, rendered, backend, note)
-
     # output == "auto"
-    if out_path:
-        return _media_response(out_path, req.text, download, missing, rendered, backend, note)
-    # cai pro gloss-file (sem vídeo mas tem gloss)
+    if official:
+        # se tem gloss, gera MP4 visual
+        try:
+            out_path = render_text_video(
+                text=req.text, gloss=official, cache_dir=CACHE_DIR, fmt="mp4",
+            )
+            return _media_response(
+                out_path, req.text, download,
+                data["missing"], data["rendered_gloss"] or data["official_gloss"],
+                backend, note,
+            )
+        except Exception as e:
+            logger.warning("auto render failed, falling back to gloss file: %s", e)
     return _gloss_response(_gloss_file_payload(req.text, data), req.text, download)
 
 
 @app.post("/translate.json", response_model=TranslateResponse)
 def translate_json(req: TranslateRequest):
-    """Variante que sempre devolve JSON (compat com clientes antigos)."""
     t = get_translator()
     data = _resolve_gloss(req, t)
     if not data["official_gloss"]:
         raise HTTPException(422, "no gloss from any backend")
-    out_path = None
-    if data["rendered_gloss"]:
-        try:
-            out_path = render(
-                tokens=data["rendered_gloss"],
-                data_dir=DATA_DIR,
-                cache_dir=CACHE_DIR,
-                fmt=req.format,
-            )
-        except FileNotFoundError as e:
-            raise HTTPException(422, str(e))
     return TranslateResponse(
         text=req.text,
         gloss=data["official_gloss"],
         missing=data["missing"],
-        video_url=f"/videos/{out_path.name}" if out_path else "",
+        video_url=_player_url(req, data) if (data["rendered_gloss"] or data["official_gloss"]) else "",
         format=req.format,
         backend=data["backend"],
         note=data["note"],
     )
 
 
-@app.get("/signs/{word}")
-def get_sign(word: str):
-    """Debug: retorna o vídeo isolado de uma palavra (dataset local)."""
-    word = word.lower()
-    t = get_translator()
-    path = t.lookup_video(word)
-    if not path:
-        raise HTTPException(404, f"sign for {word!r} not in vocabulary")
-    return FileResponse(path, media_type="video/mp4")
+@app.get("/signs/{word}/glb")
+def get_sign_glb(word: str):
+    """Serve o .glb (animação 3D) do sinal, do cache ou baixando do dicionário."""
+    try:
+        data = get_dictionary().get_glb(word)
+    except KeyError:
+        raise HTTPException(404, f"sign not found: {word!r}")
+    except Exception as e:
+        raise HTTPException(503, f"dictionary error: {e}")
+    return Response(
+        content=data,
+        media_type="model/gltf-binary",
+        headers={
+            "Content-Disposition": f'inline; filename="{quote(word)}.glb"',
+            "X-Libras2-Dictionary": f"{get_dictionary().version}/{get_dictionary().platform}",
+        },
+    )
+
+
+@app.get("/signs/{word}/info")
+def get_sign_info(word: str):
+    """Metadata do sinal: existe? tamanho? formato?"""
+    d = get_dictionary()
+    exists = d.has_sign(word)
+    size = None
+    if exists:
+        try:
+            data = d.get_glb(word)
+            size = len(data)
+        except Exception:
+            pass
+    return {
+        "word": word,
+        "exists": exists,
+        "size_bytes": size,
+        "dictionary": {
+            "version": d.version,
+            "platform": d.platform,
+            "base": d.base,
+        },
+    }
+
+
+@app.get("/signs/play")
+def play(gloss: str | None = Query(None), text: str | None = Query(None)):
+    """Player HTML standalone (three.js). Aceita gloss CSV ou texto PT."""
+    if not gloss and not text:
+        raise HTTPException(400, "passe ?gloss=BOM,DIA ou ?text=bom+dia")
+    player = STATIC_DIR / "player.html"
+    if not player.exists():
+        raise HTTPException(500, f"player.html not found at {player}")
+    return FileResponse(player, media_type="text/html")
 
 
 @app.get("/videos/{filename}")
 def get_video(filename: str):
-    """Serve o MP4/GIF do cache. Path-traversal safe."""
+    """Legacy: serve o MP4/GIF do cache local (se Fase 1 com dataset estiver ativa)."""
     if "/" in filename or ".." in filename:
         raise HTTPException(400, "invalid filename")
     path = CACHE_DIR / filename

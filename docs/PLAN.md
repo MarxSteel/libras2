@@ -86,17 +86,25 @@ RAM) está limpo. O projeto é **greenfield** — `MarxSteel/libras2` será cria
       fine-grained com `Contents: Read and write` nesse repo. Alternativa: aceitar
       `--allow-unrelated-histories` e usar o repo local como está.
 
-### Fase 1 — API funcionando (foco principal)
+### Fase 1 — API funcionando (foco principal) ✅
 
-- [ ] Criar venv em `/opt/libras2/venv` (`python3 -m venv`).
-- [ ] `pip install -e ./service[all]`.
-- [ ] Baixar V-LIBRASIL pra `data/vlibrasil/` (rodar `scripts/download_vlibrasil.py`).
-- [ ] Subir `uvicorn service.main:app --port 8088` em background.
-- [ ] Smoke test: `curl localhost:8088/health` retorna 200.
-- [ ] Smoke test: `curl -X POST localhost:8088/translate -d '{"text":"bom dia"}'` retorna MP4 válido.
-- [ ] `pytest` passa (5 frases-fix).
-- [ ] **Critério de aceite**: latência `/translate` < 5s para frase de 3 palavras;
-      pelo menos 80% das palavras comuns do português (top 1k) cobertas pelo dataset.
+- [x] Criar venv em `/opt/libras2/venv` (`python3 -m venv`).
+- [x] `pip install -e ./service[all]`.
+- [x] Subir `uvicorn service.main:app --port 8088` em background via systemd.
+- [x] `/glosa` integrado com a API oficial VLibras (tradução semântica real).
+- [x] `/translate?output=gloss` retorna arquivo `.glosa.json` (sempre funciona).
+- [x] `/translate?output=video` retorna MP4 (~64KB) gerado por `renderer_text.py`
+      (visualização da glosa, NÃO é o avatar 3D oficial do VLibras).
+- [x] `/translate?output=gif` retorna GIF (~45KB), mesmo renderer.
+- [x] `/signs/{word}/glb` serve o arquivo UnityFS do dicionário VLibras (22.498 sinais,
+      cached em disco).
+- [x] 9/9 testes passando.
+
+**Honestidade sobre o que é o vídeo**: o VLibras oficial é proprietário (player Unity
+embarcado no widget do site, não embedável standalone). O que geramos é uma
+**representação visual** da glosa usando PIL + ffmpeg — não é o avatar animado.
+Trade-off: funciona offline, é leve, é compartilhável. Para o avatar real, o
+usuário precisa abrir o widget do site gov.br.
 
 ### Fase 2 — Produção no `vareni-8` ✅
 

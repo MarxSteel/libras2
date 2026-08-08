@@ -55,6 +55,22 @@ curl -X POST http://127.0.0.1:8088/translate \
 
 **`/translate` precisa de dataset local** pra gerar vídeo. Sem o dataset, retorna gloss + lista `missing` (você pode usar a glosa direto via `/glosa`).
 
+## O que o vídeo é (e o que NÃO é)
+
+`/translate?output=video` e `?output=gif` geram um **MP4/GIF visual** da glosa usando PIL + ffmpeg.
+**Não é o avatar 3D oficial do VLibras** (que é proprietário e embedado no widget do gov.br).
+
+O que sai:
+- Frame 1: título com a frase original em PT
+- Frames seguintes: cada palavra da glosa, uma por uma, destacada em verde
+- Frame final: glosa completa consolidada
+
+Honestamente: é uma **representação visual da tradução**, não o sinal animado real. Serve
+pra visualizar, compartilhar, embedar. Para o avatar animado do VLibras, abra o widget
+oficial em `https://www.vlibras.gov.br`.
+
+Sample: `curl -X POST http://vareni-8:8088/translate?output=video -H 'content-type: application/json' -d '{"text":"obrigado meu amigo"}' -OJ`
+
 ## Estrutura
 
 ```

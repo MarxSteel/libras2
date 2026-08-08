@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>libras2 — tradutor PT → Libras</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; font: 15px/1.5 -apple-system, system-ui, sans-serif;
+           background: #0a0a0a; color: #e0e0e0;
+           display: flex; align-items: center; justify-content: center;
+           min-height: 100vh; padding: 20px; box-sizing: border-box; }
+    main { max-width: 560px; width: 100%; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { color: #888; font-size: 12px; margin-bottom: 20px; }
+    form { display: flex; gap: 8px; margin-bottom: 24px; }
+    input { flex: 1; padding: 10px 12px; background: #1a1a1a; color: #e0e0e0;
+            border: 1px solid #333; border-radius: 6px; font-size: 14px;
+            font-family: inherit; }
+    input:focus { outline: 0; border-color: #1f6feb; }
+    button { background: #1f6feb; color: white; border: 0; padding: 10px 18px;
+             border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; }
+    button:hover { background: #2680ff; }
+    button:disabled { background: #333; color: #888; cursor: wait; }
+    .gloss { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px;
+             padding: 20px; margin-bottom: 16px; }
+    .gloss h2 { font-size: 11px; font-weight: 500; text-transform: uppercase;
+                letter-spacing: 0.5px; color: #888; margin: 0 0 12px; }
+    .tokens { display: flex; flex-wrap: wrap; gap: 6px; }
+    .token { background: #0a2540; border: 1px solid #1f4e8a; padding: 6px 12px;
+             border-radius: 4px; font-family: ui-monospace, monospace;
+             font-size: 13px; color: #7af; }
+    .token.has-file { background: #0a4029; border-color: #1f8a5e; color: #7dffb8; }
+    .token.missing { background: #401a0a; border-color: #8a4e1f; color: #ffaa7d; }
+    .meta { display: flex; gap: 16px; font-size: 11px; color: #666;
+            margin-top: 12px; padding-top: 12px; border-top: 1px solid #2a2a2a; }
+    .meta b { color: #aaa; font-weight: 500; }
+    .note { background: #2a1a0a; border: 1px solid #5a3a1a; padding: 10px 14px;
+            border-radius: 6px; font-size: 12px; color: #ffaa7d; margin-top: 12px; }
+    .file-list { font-size: 11px; color: #888; margin-top: 8px; line-height: 1.7; }
+    .file-list a { color: #7af; text-decoration: none; word-break: break-all; }
+    .file-list a:hover { text-decoration: underline; }
+    .err { background: #401a0a; border: 1px solid #8a4e1f; color: #ffaa7d;
+           padding: 12px 14px; border-radius: 6px; font-size: 13px; }
+    .examples { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+    .examples button { background: #222; color: #aaa; border: 1px solid #333;
+                       font-size: 12px; padding: 4px 10px; font-weight: 400; }
+    .examples button:hover { background: #2a2a2a; color: #e0e0e0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>🤟 libras2</h1>
+    <div class="sub">Tradutor PT → Libras (glosa oficial via API do VLibras)</div>
+
+    <form id="form">
+      <input id="text" type="text" placeholder='ex: "bom dia meu nome é Marx"'
+             autocomplete="off" autofocus />
+      <button type="submit" id="btn">Traduzir</button>
+    </form>
+
+    <div class="examples">
+      <span style="font-size:11px;color:#666;align-self:center;margin-right:4px">exemplos:</span>
+      <button data-t="bom dia">bom dia</button>
+      <button data-t="obrigado">obrigado</button>
+      <button data-t="eu gosto de café com leite">eu gosto de café com leite</button>
+      <button data-t="bom dia meu nome é Marx">bom dia meu nome é Marx</button>
+      <button data-t="você pode me ajudar">você pode me ajudar</button>
+    </div>
+
+    <div id="output"></div>
+  </main>
+
+  <script>
+    const $form = document.getElementById('form');
+    const $input = document.getElementById('text');
+    const $btn = document.getElementById('btn');
+    const $out = document.getElementById('output');
+
+    // pega ?api=, ?text= da URL
+    const params = new URLSearchParams(location.search);
+    const API = params.get('api') || location.origin;
+    if (params.get('text')) $input.value = params.get('text');
+
+    document.querySelectorAll('.examples button').forEach((b) => {
+      b.addEventListener('click', () => {
+        $input.value = b.dataset.t;
+        $form.dispatchEvent(new Event('submit', { cancelable: true }));
+      });
+    });
+
+    async function translate(text) {
+      // /glosa (texto → gloss oficial)
+      const r = await fetch(`${API}/glosa`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.detail || `${r.status} ${r.statusText}`);
+      }
+      const j = await r.json();
+      // checa quais tokens têm arquivo no dicionário (paralelo)
+      const checks = await Promise.all(
+        j.gloss.map(async (g) => {
+          try {
+            const ri = await fetch(`${API}/signs/${encodeURIComponent(g)}/info`);
+            const ij = await ri.json();
+            return { word: g, exists: ij.exists, size: ij.size_bytes };
+          } catch {
+            return { word: g, exists: false };
+          }
+        })
+      );
+      return { ...j, checks };
+    }
+
+    function renderGloss(text, data) {
+      const tokensHtml = data.checks.map((c) => {
+        const cls = c.exists ? 'has-file' : 'missing';
+        const title = c.exists
+          ? `✓ ${c.word}.glb disponível (${(c.size / 1024).toFixed(1)} KB)`
+          : `✗ ${c.word} não está no dicionário VLibras`;
+        return `<span class="token ${cls}" title="${title}">${c.word}</span>`;
+      }).join('');
+
+      const fileLinks = data.checks
+        .filter((c) => c.exists)
+        .map((c) =>
+          `<a href="${API}/signs/${encodeURIComponent(c.word)}/glb" target="_blank">${c.word}.glb</a> `
+        ).join('');
+
+      return `
+        <div class="gloss">
+          <h2>${data.text}</h2>
+          <div class="tokens">${tokensHtml}</div>
+          <div class="meta">
+            <span><b>backend:</b> ${data.backend}</span>
+            ${data.note ? `<span><b>note:</b> ${data.note}</span>` : ''}
+            <span><b>glosa oficial do VLibras</b></span>
+          </div>
+          ${data.note ? `<div class="note">⚠ ${data.note}</div>` : ''}
+          ${fileLinks ? `<div class="file-list">↓ baixar animação 3D (.glb/UnityFS) — abrir com player Unity:<br>${fileLinks}</div>` : ''}
+        </div>`;
+    }
+
+    function renderErr(msg) {
+      return `<div class="err">❌ ${msg}</div>`;
+    }
+
+    $form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = $input.value.trim();
+      if (!text) return;
+      $btn.disabled = true;
+      $btn.textContent = '...';
+      $out.innerHTML = '';
+      try {
+        const data = await translate(text);
+        $out.innerHTML = renderGloss(text, data);
+      } catch (e) {
+        $out.innerHTML = renderErr(e.message);
+      } finally {
+        $btn.disabled = false;
+        $btn.textContent = 'Traduzir';
+      }
+    });
+
+    // auto-traduz se ?text= veio na URL
+    if (params.get('text')) {
+      $form.dispatchEvent(new Event('submit', { cancelable: true }));
+    }
+  </script>
+</body>
+</html>
