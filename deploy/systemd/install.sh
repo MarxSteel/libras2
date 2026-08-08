@@ -31,6 +31,10 @@ EOF
     chmod 644 "$CRON_DST"
 fi
 
+# 3. garante permissões de execução nos scripts
+chmod +x "$REPO/scripts/"*.sh "$REPO/scripts/"*.py 2>/dev/null || true
+chmod +x "$REPO/clients/"*.sh 2>/dev/null || true
+
 # 3. sanity
 sleep 2
 echo "--- status ---"
