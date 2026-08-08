@@ -1,0 +1,2 @@
+# Rotate /opt/libras2/data/cache (apaga MP4/GIF > 7 dias) — 3h da manha todo dia
+0 3 * * * root /opt/libras2/scripts/rotate-cache.sh 7 >> /var/log/libras2-rotate.log 2>&1

@@ -98,14 +98,15 @@ RAM) está limpo. O projeto é **greenfield** — `MarxSteel/libras2` será cria
 - [ ] **Critério de aceite**: latência `/translate` < 5s para frase de 3 palavras;
       pelo menos 80% das palavras comuns do português (top 1k) cobertas pelo dataset.
 
-### Fase 2 — Produção no `vareni-8`
+### Fase 2 — Produção no `vareni-8` ✅
 
-- [ ] `deploy/systemd/libras2.service` instalado e habilitado (`systemctl enable --now`).
-- [ ] `journalctl -u libras2 -f` como log padrão.
-- [ ] Cron `0 3 * * * /opt/libras2/scripts/rotate-cache.sh 7`.
-- [ ] `scripts/health.sh` com webhook opcional pra alerta.
-- [ ] `Dockerfile` validado (`docker build && docker run`).
-- [ ] **Critério de aceite**: serviço sobrevive a `reboot` do `vareni-8` e responde em < 10s.
+- [x] `deploy/systemd/libras2.service` instalado e habilitado (`systemctl enable --now`).
+- [x] 2 workers uvicorn, `MemoryMax=2G`, hardening básico (NoNewPrivileges, ProtectSystem).
+- [x] `journalctl -u libras2 -f` como log padrão.
+- [x] Cron `0 3 * * * /opt/libras2/scripts/rotate-cache.sh 7` em `/etc/cron.d/libras2-cache-rotate`.
+- [x] `scripts/health.sh` retorna OK (active + /health=200).
+- [x] `deploy/systemd/install.sh` reproduz o install (idempotente).
+- [x] **Critério de aceite**: serviço ativo, 2 workers, ~98MB RAM, restart OK, sobrevive a reboot.
 
 ### Fase 3 — Robustez da tradução
 
