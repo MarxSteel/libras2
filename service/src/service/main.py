@@ -35,7 +35,8 @@ from pydantic import BaseModel, Field
 from service.gloss import normalize_pt
 from service.translator import Translator
 from service.renderer import render as render_video  # legacy concat MP4 (sem dataset por enquanto)
-from service.renderer_text import render as render_text_video  # NOVO: gera MP4/GIF a partir de gloss
+from service.renderer_text import render as render_text_video  # MP4/GIF a partir de gloss (fallback)
+from service.renderer_widget import render_widget  # MP4/GIF com avatar 3D OFICIAL do VLibras (puppeteer)
 from service.vlibras_backend import VLibrasBackend, get_backend
 from service.dictionary import Dictionary, get_dictionary
 
@@ -44,7 +45,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 DATA_DIR = Path(os.getenv("LIBRAS2_DATA_DIR", "/opt/libras2/data/vlibrasil"))
 CACHE_DIR = Path(os.getenv("LIBRAS2_CACHE_DIR", "/opt/libras2/data/cache"))
-STATIC_DIR = Path(os.getenv("LIBRAS2_STATIC_DIR", "/opt/libras2/service/static"))
+STATIC_DIR = Path(os.getenv("LIBRAS2_STATIC_DIR", "/opt/libras2/clients"))
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="libras2", version="0.2.0", docs_url="/docs")
@@ -267,10 +268,28 @@ def translate(
             return _gloss_response(_gloss_file_payload(req.text, data), req.text, download)
         raise HTTPException(422, f"no gloss from any backend (input: {req.text!r})")
 
-    # output=video|gif → gera MP4/GIF visual a partir da glosa (sempre funciona)
+    # output=video|gif → tenta primeiro o widget oficial (avatar 3D real),
+    # cai pro renderer de texto se falhar
     if output in ("video", "gif"):
         if not official:
             raise HTTPException(422, "no gloss to render")
+        api_base = os.getenv("LIBRAS2_PUBLIC_URL", f"http://127.0.0.1:8088")
+        # 1ª tentativa: widget oficial (com PERSONAGEM 3D real do VLibras)
+        try:
+            out_path = render_widget(
+                text=req.text,
+                api_base=api_base,
+                cache_dir=CACHE_DIR,
+                fmt=req.format if output == "video" else "gif",
+            )
+            return _media_response(
+                out_path, req.text, download,
+                data["missing"], data["rendered_gloss"] or data["official_gloss"],
+                backend, note + "; widget-player" if note else "vlibras-widget",
+            )
+        except Exception as e:
+            logger.warning("widget render failed, falling back to text: %s", e)
+        # 2ª tentativa: renderer de texto (fallback)
         try:
             out_path = render_text_video(
                 text=req.text,
@@ -278,14 +297,14 @@ def translate(
                 cache_dir=CACHE_DIR,
                 fmt=req.format if output == "video" else "gif",
             )
+            return _media_response(
+                out_path, req.text, download,
+                data["missing"], data["rendered_gloss"] or data["official_gloss"],
+                backend, note + "; text-fallback" if note else "text-fallback",
+            )
         except Exception as e:
-            logger.exception("render_text_video failed")
+            logger.exception("text render also failed")
             raise HTTPException(500, f"renderer error: {e}")
-        return _media_response(
-            out_path, req.text, download,
-            data["missing"], data["rendered_gloss"] or data["official_gloss"],
-            backend, note,
-        )
 
     if output == "gloss":
         return _gloss_response(_gloss_file_payload(req.text, data), req.text, download)
@@ -369,13 +388,39 @@ def get_sign_info(word: str):
 
 @app.get("/signs/play")
 def play(gloss: str | None = Query(None), text: str | None = Query(None)):
-    """Player HTML standalone (three.js). Aceita gloss CSV ou texto PT."""
+    """Player HTML que embedda o widget OFICIAL do VLibras (avatar 3D).
+
+    URL: /signs/play?text=obrigado+pela+forca
+    O widget oficial do gov.br renderiza o personagem 3D (avatar Ícaro).
+    """
     if not gloss and not text:
         raise HTTPException(400, "passe ?gloss=BOM,DIA ou ?text=bom+dia")
-    player = STATIC_DIR / "player.html"
+    player = STATIC_DIR / "play.html"
     if not player.exists():
-        raise HTTPException(500, f"player.html not found at {player}")
+        raise HTTPException(500, f"play.html not found at {player}")
     return FileResponse(player, media_type="text/html")
+
+
+@app.get("/clients/{filename:path}")
+def serve_client(filename: str):
+    """Serve arquivos da pasta clients/ (translate.html, cli.sh, etc)."""
+    if ".." in filename:
+        raise HTTPException(400, "invalid filename")
+    path = STATIC_DIR / filename
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, "not found")
+    # content-type por extensão
+    if filename.endswith(".html"):
+        media = "text/html"
+    elif filename.endswith(".js"):
+        media = "application/javascript"
+    elif filename.endswith(".css"):
+        media = "text/css"
+    elif filename.endswith(".json"):
+        media = "application/json"
+    else:
+        media = "application/octet-stream"
+    return FileResponse(path, media_type=media)
 
 
 @app.get("/videos/{filename}")
