@@ -13,7 +13,7 @@ Environment="LIBRAS2_DATA_DIR=/opt/libras2/data/vlibrasil"
 Environment="LIBRAS2_CACHE_DIR=/opt/libras2/data/cache"
 Environment="LOG_LEVEL=INFO"
 ExecStart=/opt/libras2/venv/bin/uvicorn service.main:app \
-    --host 127.0.0.1 --port 8088 --workers 2 --no-access-log
+    --host 0.0.0.0 --port 8088 --workers 2 --no-access-log
 Restart=always
 RestartSec=3
 MemoryMax=2G

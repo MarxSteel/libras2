@@ -19,7 +19,12 @@ systemctl daemon-reload
 systemctl enable libras2.service
 systemctl restart libras2.service
 
-# 2. cron
+# 2. firewall (ufw) — libera 8088 pra IP público (já tá bindada em 0.0.0.0 no unit)
+if command -v ufw >/dev/null 2>&1; then
+    ufw allow 8088/tcp comment "libras2 API" || true
+fi
+
+# 3. cron
 if [[ -f "$CRON_SRC" ]]; then
     install -m 644 "$CRON_SRC" "$CRON_DST"
 else
@@ -31,7 +36,7 @@ EOF
     chmod 644 "$CRON_DST"
 fi
 
-# 3. garante permissões de execução nos scripts
+# 4. garante permissões de execução nos scripts
 chmod +x "$REPO/scripts/"*.sh "$REPO/scripts/"*.py 2>/dev/null || true
 chmod +x "$REPO/clients/"*.sh 2>/dev/null || true
 

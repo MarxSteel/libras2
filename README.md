@@ -15,23 +15,34 @@ frontend, qualquer cliente HTTP.
 
 ## Quickstart
 
+**Base URL pública**: `http://195.200.0.69:8088` (IP público da `vareni-8`, porta 8088 liberada no ufw).
+
 ```bash
-# no vareni-8
+# health check
+curl http://195.200.0.69:8088/health
+
+# traduzir com vídeo
+curl -X POST http://195.200.0.69:8088/translate?output=video \
+  -H 'content-type: application/json' \
+  -d '{"text":"obrigado meu amigo"}' -OJ
+
+# só a glosa
+curl -X POST http://195.200.0.69:8088/translate?output=gloss \
+  -H 'content-type: application/json' \
+  -d '{"text":"bom dia"}'
+```
+
+## Instalar do zero
+
+```bash
+# no vareni-8 (Ubuntu 24.04)
 cd /opt/libras2
 python3 -m venv venv && source venv/bin/activate
 pip install -e ./service[all]
-
-# baixar V-LIBRASIL pra data/vlibrasil/
-python scripts/download_vlibrasil.py
-
-# subir a API
-uvicorn service.main:app --host 127.0.0.1 --port 8088
+sudo ./deploy/systemd/install.sh   # unit + ufw allow 8088 + cron
 
 # em outro terminal
-curl http://127.0.0.1:8088/health
-curl -X POST http://127.0.0.1:8088/translate \
-  -H 'content-type: application/json' \
-  -d '{"text":"bom dia","format":"mp4"}'
+curl http://195.200.0.69:8088/health
 ```
 
 ## Endpoints

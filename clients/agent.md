@@ -2,12 +2,17 @@
 
 Se você é um agente/LLM e precisa traduzir Português → Libras, este arquivo é pra você.
 
+**Base URL**: `http://195.200.0.69:8088` (IP público da `vareni-8`, exposto via ufw allow 8088/tcp)
+
+Alternativas:
+- HTTPS via Tailscale Funnel: `https://srv1521298.tail00b260.ts.net`
+- Tailscale IP: `http://100.72.235.55:8088` (rede privada)
+- Loopback local: `http://127.0.0.1:8088` (rodando direto na vareni-8)
+
 ## 1. Verificar se a API está no ar
 
 ```bash
-curl -sS http://vareni-8:8088/health
-# ou se rodando local:
-curl -sS http://127.0.0.1:8088/health
+curl -sS http://195.200.0.69:8088/health
 ```
 
 Resposta esperada:
@@ -20,7 +25,7 @@ Se `status != "ok"`, **não prossiga**. Reporta pro usuário que a API está for
 ## 2. Verificar cobertura do vocabulário antes de traduzir
 
 ```bash
-curl -sS http://vareni-8:8088/vocab
+curl -sS http://195.200.0.69:8088/vocab
 ```
 
 Devolve `{words: [...], size: N}`. Útil pra saber se a palavra do usuário existe.
@@ -30,7 +35,7 @@ Devolve `{words: [...], size: N}`. Útil pra saber se a palavra do usuário exis
 ### 3a. Só a glosa (não precisa de dataset, funciona AGORA)
 
 ```bash
-curl -sS -X POST http://vareni-8:8088/glosa \
+curl -sS -X POST http://195.200.0.69:8088/glosa \
     -H 'content-type: application/json' \
     -d '{"text":"bom dia"}'
 ```
@@ -51,7 +56,7 @@ Exemplos reais (a API oficial faz supressão de pronomes e escolha de sinônimos
 ### 3b. Com vídeo (precisa de dataset local)
 
 ```bash
-curl -sS -X POST http://vareni-8:8088/translate \
+curl -sS -X POST http://195.200.0.69:8088/translate \
     -H 'content-type: application/json' \
     -d '{"text":"bom dia","format":"mp4"}'
 ```
@@ -94,7 +99,7 @@ a soletração embutida.
 O `video_url` é relativo. Pra ter o arquivo em mãos:
 
 ```bash
-curl -sS -OJ http://vareni-8:8088/videos/abc123.mp4
+curl -sS -OJ http://195.200.0.69:8088/videos/abc123.mp4
 # baixa pra ./abc123.mp4
 ```
 
@@ -111,7 +116,7 @@ curl -sS -OJ http://vareni-8:8088/videos/abc123.mp4
 import httpx
 
 def to_libras(text: str, fmt: str = "mp4") -> tuple[bytes, dict]:
-    base = "http://vareni-8:8088"
+    base = "http://195.200.0.69:8088"
     r = httpx.post(f"{base}/translate", json={"text": text, "format": fmt}, timeout=30)
     r.raise_for_status()
     meta = r.json()
