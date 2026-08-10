@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -141,6 +142,69 @@ async () => {
     });
   }
 
+  // injeta barra de legenda (caption) no rodapé — vai ser "queimada" nos screenshots
+  // aceita updates de palavra via window.__libras2Caption(idx)
+  const WORDS = (window.__LIBRAS2_WORDS__ || []).slice();
+  const cap = document.createElement('div');
+  cap.id = '__libras2-caption';
+  cap.style.cssText = [
+    'position:fixed!important',
+    'left:0!important',
+    'right:0!important',
+    'bottom:0!important',
+    'padding:32px 60px!important',
+    'min-height:120px!important',
+    'background:linear-gradient(to top,rgba(0,0,0,0.85) 0%,rgba(0,0,0,0.65) 70%,rgba(0,0,0,0) 100%)!important',
+    'color:#fff!important',
+    'font:600 56px/1.2 -apple-system,system-ui,"Segoe UI",sans-serif!important',
+    'text-align:center!important',
+    'letter-spacing:1px!important',
+    'text-shadow:0 2px 8px rgba(0,0,0,0.6)!important',
+    'z-index:2147483647!important',
+    'pointer-events:none!important',
+    'box-sizing:border-box!important',
+    'display:flex!important',
+    'align-items:center!important',
+    'justify-content:center!important',
+    'flex-wrap:wrap!important',
+    'gap:18px!important',
+  ].join(';');
+  if (WORDS.length) {
+    WORDS.forEach((w, i) => {
+      const span = document.createElement('span');
+      span.textContent = w.toUpperCase();
+      span.dataset.idx = String(i);
+      span.style.cssText = [
+        'padding:4px 14px!important',
+        'border-radius:8px!important',
+        'background:rgba(255,255,255,0.08)!important',
+        'transition:all 0.3s ease!important',
+        'opacity:0.55!important',
+      ].join(';');
+      cap.appendChild(span);
+    });
+  } else {
+    cap.textContent = '...';
+  }
+  document.body.appendChild(cap);
+
+  // helper global: destaca a palavra N
+  window.__libras2Caption = (idx) => {
+    const spans = cap.querySelectorAll('span');
+    spans.forEach((s, i) => {
+      if (i === idx) {
+        s.style.cssText = 'padding:6px 18px!important;border-radius:8px!important;'
+          + 'background:#1f6feb!important;color:#fff!important;'
+          + 'opacity:1!important;transform:scale(1.05);font-weight:700!important;'
+          + 'box-shadow:0 0 20px rgba(31,111,235,0.6)!important;';
+      } else {
+        s.style.cssText = 'padding:4px 14px!important;border-radius:8px!important;'
+          + 'background:rgba(255,255,255,0.08)!important;opacity:0.55!important;';
+      }
+    });
+  };
+  if (WORDS.length) window.__libras2Caption(0);
+
   // captura bbox do gameContainer (que agora deve ser fullscreen)
   const gc = (window.plugin && window.plugin.player && window.plugin.player.gameContainer) ||
              document.getElementById('gameContainer');
@@ -210,6 +274,13 @@ async def _render_widget_async(text: str, api_base: str, cache_dir: Path, fmt: s
                     viewport={"width": VW, "height": VH},
                     device_scale_factor=1,
                 )
+                # passa lista de palavras (gloss) pra o JS via init script
+                # IMPORTANTE: ainda não temos o gloss oficial nesse momento;
+                # usamos o split do text mesmo — é o que o usuário vê
+                words = text.split()
+                await context.add_init_script(
+                    f"window.__LIBRAS2_WORDS__ = {json.dumps(words)};"
+                )
                 page = await context.new_page()
                 logger.info("loading %s", player_url)
                 await page.goto(player_url, wait_until="domcontentloaded", timeout=30000)
@@ -242,21 +313,42 @@ async def _render_widget_async(text: str, api_base: str, cache_dir: Path, fmt: s
                     logger.warning("wrapper bbox inválido, capturando viewport inteiro")
 
                 # captura frames do player durante a animação
-                words = text.split()
-                duration_s = max(5.0, min(25.0, len(words) * 2.0 + 3.0))
-                fps = 8  # 8fps é suficiente pra movimento do avatar
+                # timing: 1.5s de "intro" (avatar parado/loading) + ~2.5s por palavra
+                n_words = max(1, len(words))
+                intro_s = 1.5
+                per_word_s = 2.5
+                duration_s = max(5.0, min(30.0, intro_s + n_words * per_word_s))
+                fps = 8
                 total_frames = int(duration_s * fps)
                 interval_s = 1.0 / fps
-                logger.info("capturing %d frames (%.1fs @ %dfps) clip=%s",
-                            total_frames, duration_s, fps, clip)
+                # cada palavra ocupa [intro_s + i*per_word_s, intro_s + (i+1)*per_word_s)
+                def word_at(t_s: float) -> int:
+                    if t_s < intro_s:
+                        return -1  # ainda não começou
+                    idx = int((t_s - intro_s) / per_word_s)
+                    return min(idx, n_words - 1)
+
+                logger.info("capturing %d frames (%.1fs @ %dfps) clip=%s, words=%d",
+                            total_frames, duration_s, fps, clip, n_words)
+                last_word = -2
                 for i in range(total_frames):
+                    t_s = i * interval_s
+                    widx = word_at(t_s)
+                    if widx != last_word:
+                        # atualiza caption via page.evaluate
+                        try:
+                            await page.evaluate(f"window.__libras2Caption && window.__libras2Caption({widx})")
+                        except Exception:
+                            pass
+                        last_word = widx
+
                     frame_path = tmp / f"frame_{i:05d}.png"
                     if clip:
                         await page.screenshot(path=str(frame_path), clip=clip)
                     else:
                         await page.screenshot(path=str(frame_path), full_page=False)
                     if i % fps == 0:
-                        logger.info("frame %d/%d", i + 1, total_frames)
+                        logger.info("frame %d/%d (t=%.1fs word=%d)", i + 1, total_frames, t_s, widx)
                     await page.wait_for_timeout(interval_s * 1000)
 
                 await context.close()
