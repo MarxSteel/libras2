@@ -40,6 +40,13 @@ from service.renderer_widget import render_widget  # MP4/GIF com avatar 3D OFICI
 from service.vlibras_backend import VLibrasBackend, get_backend
 from service.dictionary import Dictionary, get_dictionary
 
+# MCP server: expõe rotas do Libras2 como tools pro Picoclaw (e qualquer cliente MCP-aware)
+try:
+    from fastapi_mcp import FastApiMCP
+    _MCP_AVAILABLE = True
+except ImportError:
+    _MCP_AVAILABLE = False
+
 logger = logging.getLogger("libras2")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
@@ -240,7 +247,7 @@ def vocab():
     return {"words": sorted(t.index.keys()), "size": t.vocab_size}
 
 
-@app.post("/glosa", response_model=GlosaResponse)
+@app.post("/glosa", response_model=GlosaResponse, operation_id="glosa")
 def glosa(req: GlosaRequest):
     try:
         gloss = get_backend().translate(req.text)
@@ -249,7 +256,7 @@ def glosa(req: GlosaRequest):
     return GlosaResponse(text=req.text, gloss=gloss, backend="vlibras")
 
 
-@app.post("/translate")
+@app.post("/translate", operation_id="translate")
 def translate(
     req: TranslateRequest,
     output: Literal["auto", "gloss", "video", "gif"] = Query("auto"),
@@ -362,7 +369,7 @@ def get_sign_glb(word: str):
     )
 
 
-@app.get("/signs/{word}/info")
+@app.get("/signs/{word}/info", operation_id="get_sign_info")
 def get_sign_info(word: str):
     """Metadata do sinal: existe? tamanho? formato?"""
     d = get_dictionary()
@@ -433,3 +440,36 @@ def get_video(filename: str):
         raise HTTPException(404, "not found")
     media = "image/gif" if filename.endswith(".gif") else "video/mp4"
     return FileResponse(path, media_type=media)
+
+
+# ---- MCP server -------------------------------------------------------------
+# Expõe rotas selecionadas como tools no endpoint /mcp (Streamable HTTP).
+# Clientes compatíveis: Picoclaw, OpenAI function-calling, MCP Inspector, etc.
+# Tools expostas:
+#   - glosa(text)         PT → gloss (uppercase Libras, ordem SOV)
+#   - translate(text, format)  PT → MP4/GIF com avatar 3D Ícaro + gloss
+#   - get_sign_info(word)     metadata do sinal (existe? tamanho?)
+#   - get_sign_glb(word)      modelo 3D .glb (experimental — VLibras mudou formato)
+if _MCP_AVAILABLE:
+    _mcp_server = FastApiMCP(
+        app,
+        name="libras2",
+        description=(
+            "Traduz Português para Libras (Língua Brasileira de Sinais). "
+            "Use translate(text) para gerar MP4 com avatar 3D oficial Ícaro do VLibras "
+            "(fullscreen, com legenda por palavra destacada). Use glosa(text) para só o "
+            "gloss em texto. Use get_sign_info(word) para checar se uma palavra existe. "
+            "O primeiro render de uma frase leva 60-200s (Chromium + Unity WebGL), "
+            "frases repetidas saem em < 1s (cache em disco)."
+        ),
+        include_operations=[
+            "glosa",            # POST /glosa
+            "translate",        # POST /translate
+            "get_sign_info",    # GET /signs/{word}/info
+            # "get_sign_glb",  # GET /signs/{word}/glb  — desabilitado: VLibras mudou formato
+        ],
+    )
+    _mcp_server.mount_http()  # expõe em /mcp
+    logger.info("MCP server mounted at /mcp")
+else:
+    logger.warning("fastapi-mcp not installed, /mcp not available")
