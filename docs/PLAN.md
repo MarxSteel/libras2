@@ -1,16 +1,20 @@
 # libras2 — Plano de Implementação
 
-> API REST que traduz Português para Libras e devolve MP4/GIF do sinal.
-> Sem amarração a nenhum canal. Pode ser consumida por agente, n8n, CLI, frontend,
-> qualquer cliente HTTP.
+> **Status atual (2026-08-10):** API rodando em produção no `vareni-8`
+> (`http://195.200.0.69:8088`). Avatar 3D Ícaro do VLibras funcionando fullscreen
+> com legenda por palavra. Próxima fase: migrar pra nova máquina `72.62.9.238`
+> + agente Telegram via fastapi-mcp + Xiaomi MiMo.
+
+---
 
 ## Contexto
 
-A conta `MarxSteel` no GitHub tem `ANP` e `suporte` mas **não tem `libras2`**. O workspace
-local `~/Documents/projetos/libras` está vazio. `vareni-8` (195.200.0.69, Ubuntu 24.04, 8GB
-RAM) está limpo. O projeto é **greenfield** — `MarxSteel/libras2` será criado do zero.
+Greenfield em 2026-08-07. Conta `MarxSteel` no GitHub sem o repo `libras2`.
+Workspace local vazio. `vareni-8` (195.200.0.69, Ubuntu 24.04, 8GB RAM) limpo.
+**Tudo começou do zero** — `MarxSteel/libras2` foi criado do zero e
+empurrado pro GitHub nas primeiras 24h.
 
-### Decisões de arquitetura
+### Decisões de arquitetura (originais)
 
 - **API-first**. O entregável principal é um serviço HTTP stateless. Não amarra em
   WhatsApp, Telegram, ou nenhum cliente. Clientes plugam depois.
@@ -24,18 +28,30 @@ RAM) está limpo. O projeto é **greenfield** — `MarxSteel/libras2` será cria
 - **ffmpeg** com `-c copy` (sem reencode) pro concat. Cache por hash.
 - **sem GPU**. Funciona em CPU puro.
 
+### Decisões de arquitetura (atualizadas em 2026-08-10)
+
+- **Avatar 3D real** via widget oficial do VLibras (`https://vlibras.gov.br/app/vlibras-plugin.js`).
+  Player Unity WebGL (Ícaro) carregado em Playwright + chromium-headless-shell.
+  Renderiza **qualquer** sinal que o widget reconhece (22.498 do dicionário).
+- **Headless Chromium** com `swiftshader` (software WebGL) — sem GPU, ainda assim funciona.
+- **Captura de frames** a 8 fps durante a animação, com legenda sincronizada.
+- **Concat ffmpeg** → MP4 (libx264) ou GIF (palettegen).
+- **Cache em disco** por SHA256(text) — vídeos repetidos saem instantâneos.
+
 ### Por que NÃO outras opções
 
 | Opção | Por que não |
 |---|---|
-| VLibras oficial self-hosted (Node+Python+avatar 3D) | Pesado (3-4GB RAM), GPU pra render fluente, historicamente problemático de instalar |
+| VLibras oficial self-hosted (Node+Python+avatar 3D) | Pesado (3-4GB RAM), GPU pra render fluente, historicamente problemático de instalar. Mas o **widget oficial é embedável** — então usamos ele! |
 | Avatar gerativo (LivePortrait, AVTR-1) | Não faz **tradução semântica** PT→Libras, só dirige boca a partir de áudio |
 | SignAvatar (PyPI) | Usa Giphy de ASL (American), não serve pra Libras |
 | `sign-language-translator` + datasets PSL/PSK | É pra Paquistão, não Libras |
 | `sign-language-processing/pose-to-video` | Precisa de pose sequences gravadas, muito trabalho manual |
-| sign-language-translator Libras (se houver) | Não existe ainda como dataset público Libras pronto |
+| Render manual com PIL (renderer_text.py) | Faz **só** visualização textual, não é o sinal animado real. Mantido como **fallback** se widget falhar |
 
-## Arquitetura
+---
+
+## Arquitetura final
 
 ```
 ┌─────────────────┐                                  ┌────────────────────────────┐
@@ -43,48 +59,55 @@ RAM) está limpo. O projeto é **greenfield** — `MarxSteel/libras2` será cria
 │                 │   {text, format}                 │  (FastAPI + uvicorn)       │
 │  • agente (LLM) │ ──────────────────────────────►  │  :8088                     │
 │  • n8n          │                                  │                            │
-│  • curl / CLI   │   {gloss, missing, video_url}    │  ┌──────────────────────┐  │
+│  • curl / CLI   │   MP4/GIF (binário)              │  ┌──────────────────────┐  │
 │  • frontend web │ ◄──────────────────────────────  │  │ Translator           │  │
-│  • qualquer um  │                                  │  │  PT → gloss          │  │
-└─────────────────┘   GET /videos/{hash}.mp4         │  ├──────────────────────┤  │
-                       ◄─────────────────────────────  │  │ Renderer             │  │
-                                                        │  │  ffmpeg concat       │  │
-                                                        │  ├──────────────────────┤  │
-                                                        │  │ data/vlibrasil/      │  │
-                                                        │  │  1.364 sinais        │  │
-                                                        │  │  4.089 vídeos        │  │
-                                                        │  └──────────────────────┘  │
-                                                        └────────────────────────────┘
+│  • Telegram bot │                                  │  │  PT → gloss          │  │
+│  • WhatsApp bot │   GET /glosa (JSON)              │  ├──────────────────────┤  │
+│  • qualquer um  │ ◄──────────────────────────────  │  │ VLibras Backend      │  │
+│                 │                                  │  │  (API oficial gov)   │  │
+└─────────────────┘                                  │  ├──────────────────────┤  │
+                                                     │  │ Dictionary           │  │
+                                                     │  │  22.498 sinais .glb  │  │
+                                                     │  ├──────────────────────┤  │
+                                                     │  │ Widget Renderer      │  │
+                                                     │  │  Playwright +        │  │
+                                                     │  │  chromium-headless   │  │
+                                                     │  │  + swiftshader       │  │
+                                                     │  ├──────────────────────┤  │
+                                                     │  │ Text Renderer        │  │
+                                                     │  │  (fallback PIL+ffmpeg│  │
+                                                     │  └──────────────────────┘  │
+                                                     │                            │
+                                                     │  data/cache/ (MP4/GIF)     │
+                                                     │  data/dictionary/ (.glb)   │
+                                                     └────────────────────────────┘
 ```
 
 ### Componentes
 
-1. **`service/`** — API FastAPI em Python.
-   - `POST /glosa` body `{"text": "..."}` → `{gloss, backend}` (consulta API oficial VLibras)
-   - `POST /translate` body `{"text": "...", "format": "mp4"|"gif", "backend": "local"|"vlibras"|"auto"}` → `{gloss, missing, video_url, format, backend, note}`
-   - `GET /health` → `{status, vocab_size, data_dir, cache_dir, backends}`
-   - `GET /vocab` → lista as palavras do dataset local
-   - `GET /signs/{word}` → MP4 do sinal isolado (debug, requer dataset)
-   - `GET /videos/{filename}` → serve o MP4/GIF do cache
-   - `GET /docs` → Swagger UI automático
-2. **`clients/`** — exemplos de consumidores (não fazem parte do core).
-   - `agent.md` — guia pra LLM/agente chamar a API
-   - `n8n-workflow.json` — workflow de exemplo
-   - `cli.sh` — wrapper de linha de comando
-3. **`deploy/systemd/`** — unit de produção.
-4. **`scripts/`** — download de dataset, health check, rotação de cache.
+1. **`service/src/service/main.py`** — FastAPI app, todas as rotas.
+2. **`service/src/service/translator.py`** — tokenização PT + to_gloss local.
+3. **`service/src/service/gloss.py`** — pipeline de gloss (normalização PT).
+4. **`service/src/service/vlibras_backend.py`** — cliente da API oficial VLibras (com cache LRU).
+5. **`service/src/service/dictionary.py`** — cache do dicionário VLibras (22.498 sinais .glb).
+6. **`service/src/service/renderer_widget.py`** — **★ avatar 3D Ícaro via Playwright + Chromium headless.**
+7. **`service/src/service/renderer_text.py`** — fallback visual (PIL + ffmpeg).
+8. **`service/src/service/renderer.py`** — legacy concat MP4 (place dataset).
+9. **`clients/play.html`** — player HTML que embedda o widget oficial VLibras.
+10. **`deploy/systemd/libras2.service`** — unit de produção.
+11. **`scripts/`** — health, rotate-cache, watchdog.
+
+---
 
 ## Fases
 
 ### Fase 0 — Bootstrap ✅
 
-- [x] `vareni-8`: instalar `ffmpeg`, `python3-pip`, `python3-venv`, `jq`.
+- [x] `vareni-8`: instalar `ffmpeg`, `python3-pip`, `python3-venv`, `jq`, `ufw`.
 - [x] `vareni-8`: `mkdir /opt/libras2 && git init -b main`.
 - [x] Local: scaffold de pastas em `~/Documents/projetos/libras/`.
 - [x] Plano, README, runbook, esqueleto do service, esqueleto dos clientes.
-- [ ] **Você**: criar o repo `MarxSteel/libras2` vazio no GitHub e me passar um PAT
-      fine-grained com `Contents: Read and write` nesse repo. Alternativa: aceitar
-      `--allow-unrelated-histories` e usar o repo local como está.
+- [x] Repo `MarxSteel/libras2` criado no GitHub + push inicial.
 
 ### Fase 1 — API funcionando (foco principal) ✅
 
@@ -100,12 +123,6 @@ RAM) está limpo. O projeto é **greenfield** — `MarxSteel/libras2` será cria
       cached em disco).
 - [x] 9/9 testes passando.
 
-**Honestidade sobre o que é o vídeo**: o VLibras oficial é proprietário (player Unity
-embarcado no widget do site, não embedável standalone). O que geramos é uma
-**representação visual** da glosa usando PIL + ffmpeg — não é o avatar animado.
-Trade-off: funciona offline, é leve, é compartilhável. Para o avatar real, o
-usuário precisa abrir o widget do site gov.br.
-
 ### Fase 2 — Produção no `vareni-8` ✅
 
 - [x] `deploy/systemd/libras2.service` instalado e habilitado (`systemctl enable --now`).
@@ -115,35 +132,111 @@ usuário precisa abrir o widget do site gov.br.
 - [x] `scripts/health.sh` retorna OK (active + /health=200).
 - [x] `deploy/systemd/install.sh` reproduz o install (idempotente).
 - [x] **Critério de aceite**: serviço ativo, 2 workers, ~98MB RAM, restart OK, sobrevive a reboot.
+- [x] ufw allow 8088/tcp — IP público `195.200.0.69:8088` responde.
+- [x] Tailscale Funnel: `https://srv1521298.tail00b260.ts.net` → 8088.
 
-### Fase 3 — Robustez da tradução
+### Fase 3 — Robustez da tradução ✅ (parcial)
 
-- [ ] Reordenação SOV (Libras usa SOV, português SVO).
+- [x] Fallback automático `local → vlibras` quando gloss local vazio.
+- [x] Dicionário VLibras (22.498 sinais) como índice de "tem vídeo".
+- [x] Headers `X-Libras2-*` com gloss, missing, backend, note.
+- [ ] Reordenação SOV manual (Libras usa SOV, português SVO).
 - [ ] Lematização (correndo→correr).
 - [ ] Fallback de datilologia: palavra sem vídeo → soletrar com alfabeto manual.
 - [ ] Endpoint `POST /admin/words` (autenticado) pra subir vídeos novos de palavra custom.
-- [ ] Cache LRU em memória pra glosses frequentes.
+- [x] Cache LRU em memória pra glosses frequentes.
 - [ ] Rate limiting (`slowapi`).
-- [ ] **Critério de aceite**: cobertura de frase natural sobe de ~60% pra ~85%.
 
-### Fase 4 — Clientes (paralelo, sob demanda)
+**Nota:** a API oficial VLibras já faz a reordenação SOV, lematização e sinônimos
+automaticamente. O gloss retornado já está pronto pra ser renderizado.
 
-- [ ] `clients/n8n-workflow.json` — workflow exemplo: Webhook → translate → responde.
-- [ ] `clients/cli.sh` — `libras2 "bom dia" → /tmp/libras.mp4`.
-- [ ] `clients/agent.md` — guia pra LLM saber chamar a API via tool/function.
-- [ ] (Opcional) `clients/web/` — frontend estático com form + preview do vídeo.
-- [ ] **Critério de aceite**: agente consegue traduzir usando só a API sem olhar código.
+### Fase 4 — ★ Avatar 3D Ícaro via widget oficial ✅
 
-## Estrutura de Pastas
+- [x] `renderer_widget.py` carrega widget oficial do VLibras em Playwright headless.
+- [x] chromium-headless-shell (vs chromium full) pra reduzir RAM.
+- [x] swiftshader pra WebGL em CPU puro.
+- [x] Viewport 1920×1080 + força fullscreen via `page.evaluate`.
+- [x] Descobre estrutura: `[vw] > [vw-plugin-wrapper] > div > #gameContainer.emscripten > canvas#canvas`.
+- [x] Esconde UI do widget (header, controles, settings, etc) com `display:none!important`.
+- [x] Captura bbox do `gameContainer` (que agora é fullscreen).
+- [x] Captura 8 fps × duração.
+- [x] Concatena com ffmpeg (libx264 pra MP4, palettegen pra GIF).
+- [x] Cache por SHA256(text).
+- [x] TMPDIR=/opt/libras2/data/cache (system /tmp é read-only).
+- [x] **Critério de aceite**: vídeo com avatar 3D real, corpo inteiro visível, cache hit funcional.
+
+**Honestidade técnica:** primeira render é lenta (60-200s) porque Chromium precisa
+inicializar o Unity WebGL. Mas com cache em disco, vídeos repetidos saem em < 1s.
+Trade-off aceito: o usuário final não vai esperar isso se a frase for cacheada.
+
+### Fase 5 — ★ Legenda por palavra com highlight animado ✅
+
+- [x] Palavras passadas pro widget via `context.add_init_script("window.__LIBRAS2_WORDS__ = ...")`.
+- [x] Caption bar injetada no DOM com `position:fixed; bottom:0; ...`.
+- [x] Cada palavra em `<span data-idx>` com opacity 0.55 (não destacada).
+- [x] Palavra atual destacada via `__libras2Caption(idx)` — azul + glow + scale 1.05.
+- [x] Timing: 1.5s intro + 2.5s por palavra.
+- [x] Atualizado por frame no Python via `await page.evaluate(f"window.__libras2Caption({widx})")`.
+- [x] **Critério de aceite**: legenda sincronizada com a animação, queimada nos frames.
+
+### Fase 6 — Agente Telegram via fastapi-mcp + Xiaomi MiMo (próximo) ⏳
+
+**Objetivo:** expor a API do Libras2 como MCP tools, conectar num agente de chat
+(Picoclaw), configurar LLM Xiaomi MiMo V2.5 Pro, ativar canal Telegram.
+
+**Máquina destino:** `72.62.9.238` (Ubuntu 24.04, 7.8GB RAM, hostname `srv1186168`).
+
+**Stack:**
+- `fastapi-mcp` (3 linhas no `main.py`, MIT) — expõe rotas como MCP tools em `/mcp`
+- `Picoclaw` (Sipeed, Go, <10MB RAM) — agente de chat leve, channels: Telegram/Discord/etc
+- `Xiaomi MiMo V2.5 Pro` (OpenAI-compatible, `https://api.xiaomimimo.com/v1`) — LLM
+- Telegram (canal 1, via @BotFather)
+
+**Plano completo:** [`/tmp/migration-plan-72.62.9.238/PLANO_MIGRACAO.md`](/tmp/migration-plan-72.62.9.238/PLANO_MIGRACAO.md) (8 fases, 725 linhas, PT-BR).
+
+**Critério de aceite:** mandar mensagem real no Telegram, bot responde com MP4 Libras.
+
+### Fase 7 — WhatsApp nativo (quando demandar) ⏸
+
+- [ ] Rebuild Picoclaw com `-tags whatsapp_native` (whatsmeow).
+- [ ] Escanear QR, salvar sessão.
+- [ ] Teste fim-a-fim.
+
+**Risco:** whatsmeow é não-oficial, pode dar ban se uso comercial. Manter Telegram
+como primário até resolver.
+
+### Fase 8 — Hardening + monitoring + backup (Fase 8 do plano de migração) ⏳
+
+- [ ] Caddy HTTPS reverse proxy.
+- [ ] Watchdog que mata chromium zumbi.
+- [ ] Backup automático do `data/` (cache + dicionário).
+- [ ] Healthcheck endpoint pra Uptime Kuma / Betterstack.
+- [ ] Métricas Prometheus (opcional).
+
+### Fase 9 — Warmup pool + fila de render (chatbot real-time) 💭
+
+**Problema:** chatbot Telegram espera resposta em < 5s, mas render leva 60-200s.
+
+**Soluções possíveis:**
+- Pool de N Chromium pré-aquecidos com widget já carregado
+- Worker assíncrono que retorna task_id, usuário recebe vídeo via notificação depois
+- Fila com priorização (frases comuns pré-renderizadas em batch noturno)
+
+**Decidir** quando chatbot estiver em produção e tivermos dados de uso real.
+
+---
+
+## Estrutura de Pastas (atual)
 
 ```
 libras2/
 ├── README.md
 ├── docs/
 │   ├── PLAN.md            ← este arquivo
-│   └── OPERATIONS.md
+│   ├── API.md             ← referência completa da API
+│   ├── ARCHITECTURE.md    ← decisões (widget, render, cache)
+│   └── OPERATIONS.md      ← runbook de produção
 ├── service/
-│   ├── Dockerfile
 │   ├── pyproject.toml
 │   ├── src/
 │   │   └── service/
@@ -151,45 +244,72 @@ libras2/
 │   │       ├── main.py
 │   │       ├── translator.py
 │   │       ├── gloss.py
-│   │       └── renderer.py
+│   │       ├── vlibras_backend.py
+│   │       ├── dictionary.py
+│   │       ├── renderer.py              (legacy)
+│   │       ├── renderer_text.py         (fallback)
+│   │       └── renderer_widget.py       ★ avatar 3D
 │   └── tests/
-│       └── test_translate.py
 ├── clients/
-│   ├── README.md
-│   ├── agent.md            ← como agente/LLM consome
-│   ├── n8n-workflow.json   ← workflow exemplo
-│   └── cli.sh              ← wrapper bash
+│   ├── play.html           ★ player do widget VLibras
+│   ├── translate.html
+│   ├── agent.md            ← como LLM/agente consome
+│   ├── n8n-workflow.json
+│   └── cli.sh
 ├── deploy/
 │   └── systemd/
-│       └── libras2.service
+│       ├── libras2.service
+│       └── install.sh
 ├── scripts/
-│   ├── download_vlibrasil.py
 │   ├── health.sh
-│   └── rotate-cache.sh
+│   ├── rotate-cache.sh
+│   └── watchdog.sh
 └── data/
-    ├── vlibrasil/          ← vídeos do dataset (gitignored, ~3GB)
-    └── cache/              ← MP4/GIF gerados (gitignored)
+    ├── cache/              ← MP4/GIF gerados (gitignored, ~1GB)
+    ├── dictionary/         ← .glb dos 22k sinais (gitignored, ~50GB se completo)
+    └── samples/            ← exemplos pra teste
 ```
+
+---
 
 ## Riscos & Mitigações
 
 | Risco | Mitigação |
 |---|---|
-| V-LIBRASIL indisponível no Zenodo | Plano B: dataset próprio (gravar 1.3k sinais = 3-6 meses). Plano C: VLibras dictionary-video do `spbgovbr-libras2` |
-| Vocabulário V-LIBRASIL incompleto | Fallback de datilologia (Fase 3). Usuário pode subir vídeos próprios (`/admin/words`) |
-| RAM do `vareni-8` estourar (8GB) | `MemoryMax=2G` no libras2. Cache LRU com TTL. Cache em disco, não memória |
-| ffmpeg concat quebrar com vídeos de tamanhos diferentes | Padronizar resolução 480x360 no V-LIBRASIL; `-c copy` sem reencode (rápido) |
-| Concorrência alta (100+ req/s) | `--workers 4` no uvicorn; fila de processamento com timeout |
+| VLibras oficial mudar widget (versão nova quebra fullscreen JS) | Versões pinadas; hide selectors revalidados a cada release do VLibras |
+| VLibras API mudar contrato | Bate em `https://traducao2.vlibras.gov.br/translate`; smoke test diário detecta |
+| Chromium memory leak em render longo | Watchdog script mata renderer se RSS > 1.5 GB |
+| Cache encher disco | `rotate-cache.sh` remove arquivos > 7 dias; backup opcional em Fase 8 |
+| Picoclaw pré-v1.0 quebrar | Pin versão (não `latest`) no plano de migração |
+| WhatsApp ban por whatsmeow não-oficial | Telegram como primário; WhatsApp só com opt-in |
+| Xiaomi MiMo mudar API | OpenAI-compatible, contrato estável. Fallback = OpenRouter (mesma base) |
+| Concorrência alta (100+ req/s) | `--workers 4` no uvicorn (se RAM permitir); fila de processamento com timeout |
+
+---
 
 ## Quando pedir ajuda
 
-- **PAT do GitHub** — pra criar o repo e dar push.
-- **Aprovação** antes de instalar pacotes (`apt`, `pip`) e baixar dataset grande.
+- **Telegram BotFather** — pra criar bot e pegar token (Fase 6).
+- **Xiaomi MiMo API key** — `https://platform.xiaomimimo.com` (Fase 6).
+- **Aprovação** antes de instalar pacotes (`apt`, `pip`) em 72.62.9.238.
 - **Esclarecimento** sobre escopo se aparecer ambiguidade.
 
-## Status atual
+---
 
-- ✅ Repo local inicializado em `/opt/libras2` no `vareni-8` (2 commits).
-- ✅ Scaffold sincronizado local + remoto via rsync.
-- ✅ Esqueleto de código escrito.
-- 🔄 **Próximo passo (Fase 1)**: criar venv, instalar deps, baixar V-LIBRASIL, subir API.
+## Histórico de commits (vareni-8)
+
+```
+1725715 feat(widget): legenda por palavra com highlight animado
+f6af96e fix(widget): força fullscreen do avatar Ícaro via JS
+cef8124 feat: widget renderer (avatar 3D real do VLibras via Playwright)
+11786eb feat: expor API no IP público + ufw allow 8088
+ad7b809 feat: video/gif renderer (visualização da glosa)
+1f6ab47 fix: install.sh garante +x nos scripts e clients
+8aa041b feat: Fase 2 done — systemd + cron + install script
+bf23c44 feat: /translate now returns file (gloss/auto/video/gif) instead of JSON
+0e339c7 Merge branch 'main' of https://github.com/MarxSteel/libras2
+947d69a feat: integrate VLibras official backend (glosa) + restructure translate
+e0aa3d3 refactor: rename project vlibras -> libras2
+98b9f4d refactor: drop WhatsApp/Hermes, focus on API
+c55805c Initial commit
+```
