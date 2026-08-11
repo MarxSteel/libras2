@@ -109,6 +109,13 @@
           <option value="">(detectando...)</option>
         </select>
       </label>
+      <label>Modo:
+        <select id="modeSelect" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); color: var(--fg); border-radius: 6px; padding: 8px 10px; font: inherit;">
+          <option value="sinais" selected>Sinais (Libras keyframes)</option>
+          <option value="misto">Misto (gesto + BVH)</option>
+          <option value="danca">Dança (BVH round-robin)</option>
+        </select>
+      </label>
       <label><input type="checkbox" id="showHelperChk" /> Skeleton wireframe</label>
       <label><input type="checkbox" id="loopChk" /> Loop</label>
     </div>
@@ -143,6 +150,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { BVHLoader } from 'three/addons/loaders/BVHLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { captureRestPose, gestureToClip, applyGestureViaMixer, resetSkeleton } from './lib/skeleton-utils.js';
+import { lookupGesture, normalizeToken, GESTURES as GESTURE_LIB } from './lib/gestures.js';
 
 // ============================================================================
 // Logs
@@ -197,12 +206,13 @@ scene.add(grid);
 // ============================================================================
 // Avatar: GLB (humanóide) + BVH (animação) via SkeletonUtils.retargetClip
 // ============================================================================
-let avatarRoot = null;        // THREE.Object3D raiz do avatar (clonado por BVH)
+let avatarRoot = null;        // THREE.Object3D raiz do avatar (clonado por BVH/gesture)
 let avatarHelper = null;      // SkeletonHelper pra debug
-let mixer = null;             // THREE.AnimationMixer
+let mixer = null;             // THREE.AnimationMixer (modo BVH OU gesture)
 let currentAction = null;
 let currentClip = null;
 let currentBVH = null;
+let currentGesture = null;    // { gesture, normalized, t0 } (modo gesture via mixer)
 const clock = new THREE.Clock();
 
 // Selecionador de avatar (combobox na UI)
@@ -253,9 +263,11 @@ async function loadGLB(url) {
         reject(new Error('GLB não tem SkinnedMesh'));
         return;
       }
-      const result = { gltf, skeleton, root };
+      // captura rest pose (T-pose) — base pras interpolações de gesture
+      const restPose = captureRestPose(root);
+      const result = { gltf, skeleton, root, restPose };
       glbCache.set(url, result);
-      log(`GLB ok: ${skeleton.bones.length} bones, ${gltf.scene.children.length} children`, 'ok');
+      log(`GLB ok: ${skeleton.bones.length} bones, ${gltf.scene.children.length} children, restPose ${restPose.size}`, 'ok');
       resolve(result);
     }, undefined, (err) => {
       log(`falha GLB ${url}: ${err.message || err}`, 'err');
@@ -288,6 +300,83 @@ function clearAvatar() {
   }
   currentAction = null;
   currentClip = null;
+  currentGesture = null;
+}
+
+/**
+ * Aplica gesto (keyframes) ao avatar clonado.
+ * Estratégia: constrói um "fake BVH" usando o skeleton do GLB + clip
+ * do gesture, e reusa o pipeline do applyBVHToAvatar (que já funciona).
+ */
+function applyGestureToAvatar(gesture, normalized) {
+  if (!activeAvatar) {
+    log('sem avatar carregado', 'err');
+    return;
+  }
+  clearAvatar();
+
+  // clona o template do avatar
+  const clone = SkeletonUtils.clone(activeAvatar.gltf.scene);
+  let skinnedMesh = null;
+  clone.traverse((obj) => {
+    if (obj.isSkinnedMesh && !skinnedMesh) skinnedMesh = obj;
+  });
+  if (!skinnedMesh) {
+    log('clone não tem SkinnedMesh', 'err');
+    return;
+  }
+
+  // Constrói fake BVH: usa o skeleton do clone + clip do gesture
+  const fakeClip = gestureToClip(gesture, normalized);
+  const fakeBvhResult = {
+    skeleton: skinnedMesh.skeleton,
+    clip: fakeClip,
+  };
+  // hack: precisa estar "loaded" via BVHLoader — vamos setar o source do BVH pra enganar
+  // Aplica direto
+  scene.add(clone);
+  avatarRoot = clone;
+
+  // renomeia bones (no-op, já são Mixamo)
+  renameBVHBones(fakeBvhResult);
+
+  // retargetClip: source (skeleton do clone) → target (skinnedMesh)
+  let retargetedClip = null;
+  try {
+    retargetedClip = SkeletonUtils.retargetClip(
+      skinnedMesh,
+      fakeBvhResult.skeleton,
+      fakeBvhResult.clip
+    );
+  } catch (e) {
+    log(`retargetClip gesture error: ${e.message}`, 'err');
+  }
+  if (!retargetedClip) {
+    log('retargetClip gesture retornou null', 'err');
+    return;
+  }
+
+  // Anexa root bone ao skinnedMesh (igual BVH pipeline)
+  if (skinnedMesh.skeleton && skinnedMesh.skeleton.bones.length > 0) {
+    const rootBone = skinnedMesh.skeleton.bones[0];
+    if (rootBone.parent !== skinnedMesh) skinnedMesh.add(rootBone);
+  }
+
+  // mixer
+  mixer = new THREE.AnimationMixer(skinnedMesh);
+  currentAction = mixer.clipAction(retargetedClip);
+  currentAction.setLoop(THREE.LoopRepeat);
+  currentAction.play();
+  currentClip = retargetedClip;
+  currentGesture = { gesture, normalized, t0: performance.now() };
+
+  // helper visual (opcional)
+  if (document.getElementById('showHelperChk')?.checked) {
+    avatarHelper = new THREE.SkeletonHelper(skinnedMesh);
+    scene.add(avatarHelper);
+  }
+
+  setStatus(`Gesto: ${normalized} (${gesture.duration.toFixed(1)}s, ${retargetedClip.tracks.length} tracks)`);
 }
 
 // ============================================================================
@@ -452,19 +541,51 @@ function tokenize(text) {
 }
 
 function buildSequence(words) {
-  // mapeia palavra → BVH (demo: round-robin entre os 3 BVHs disponíveis)
+  // Modo "sinais" (default): usa gestos (keyframes Libras) com lookup.
+  // Se palavra não tem gesto: fallback BVH (round-robin).
+  // Suporta compostos (BOM DIA → 1 gesto único).
+  const mode = document.getElementById('modeSelect')?.value || 'sinais';
   const bvhFiles = ['bvh/pirouette.bvh', 'bvh/dance1.bvh', 'bvh/dance2.bvh'];
-  return words.map((w, i) => ({
-    word: w,
-    bvhUrl: bvhFiles[i % bvhFiles.length],
-    duration: 1.5 + (w.length * 0.1), // heurística: 1.5s + 0.1s por caractere
-  }));
+  const seq = [];
+  let i = 0;
+  let bvhIdx = 0;
+  while (i < words.length) {
+    const remaining = words.slice(i);
+    let pushed = false;
+    if (mode !== 'danca') {
+      const match = lookupGesture(remaining[0], remaining.slice(1));
+      if (match) {
+        seq.push({
+          word: remaining.slice(0, match.consumed).join(' '),
+          type: 'gesture',
+          gesture: match.gesture,
+          duration: match.gesture.duration + 0.2, // +0.2s de folga entre gestos
+          matched: match.normalized,
+        });
+        i += match.consumed;
+        pushed = true;
+      }
+    }
+    if (!pushed) {
+      seq.push({
+        word: remaining[0],
+        type: 'bvh',
+        bvhUrl: bvhFiles[bvhIdx % bvhFiles.length],
+        duration: 1.5,
+      });
+      bvhIdx++;
+      i++;
+    }
+  }
+  return seq;
 }
 
 async function ensureSequence(words) {
-  // carrega todos os BVHs em paralelo (cache)
+  // monta a sequência (gestos + fallback BVH)
   const seq = buildSequence(words);
-  await Promise.all(seq.map(s => loadBVH(s.bvhUrl).catch(() => null)));
+  // pré-carrega apenas os BVHs de fallback
+  const bvhUrls = [...new Set(seq.filter(s => s.type === 'bvh').map(s => s.bvhUrl))];
+  await Promise.all(bvhUrls.map(url => loadBVH(url).catch(() => null)));
   return seq;
 }
 
@@ -507,13 +628,20 @@ function nextInSequence() {
     }
   }
   const item = sequence[seqIndex];
-  log(`[${seqIndex + 1}/${sequence.length}] ${item.word} ← ${item.bvhUrl.split('/').pop()}`);
+  const tag = item.type === 'gesture'
+    ? `gesto ${item.matched} (${item.gesture.duration.toFixed(1)}s)`
+    : `BVH ${item.bvhUrl.split('/').pop()}`;
+  log(`[${seqIndex + 1}/${sequence.length}] ${item.word} ← ${tag}`);
   renderCaption(sequence.map(s => s.word), seqIndex);
-  const bvh = bvhCache.get(item.bvhUrl);
-  if (bvh) {
-    applyBVHToAvatar(bvh);
+  if (item.type === 'gesture') {
+    applyGestureToAvatar(item.gesture, item.matched);
   } else {
-    log(`BVH não carregado: ${item.bvhUrl}`, 'err');
+    const bvh = bvhCache.get(item.bvhUrl);
+    if (bvh) {
+      applyBVHToAvatar(bvh);
+    } else {
+      log(`BVH não carregado: ${item.bvhUrl}`, 'err');
+    }
   }
   seqStart = performance.now();
   seqTimer = setTimeout(() => {
@@ -651,7 +779,8 @@ async function detectGLBs() {
 }
 
 (async () => {
-  log('POC v2 — GLB + BVH retarget via SkeletonUtils', 'ok');
+  log('POC v3 — GLB + gestos Libras (keyframes) + BVH fallback', 'ok');
+  log(`biblioteca de gestos: ${Object.keys(GESTURE_LIB).length} entradas`, 'ok');
   log('detectando avatares disponíveis…', 'info');
   availableAvatars = await detectGLBs();
   if (availableAvatars.length === 0) {
@@ -669,7 +798,7 @@ async function detectGLBs() {
   // carrega o primeiro
   activeAvatar = await loadGLB(availableAvatars[0].url);
   // expõe no window pra debug
-  window.__debug = { activeAvatar, bvhCache, glbCache, skeletonUtils: SkeletonUtils, THREE };
+  window.__debug = { activeAvatar, bvhCache, glbCache, skeletonUtils: SkeletonUtils, THREE, GESTURE_LIB };
   log(`avatar padrão: ${availableAvatars[0].name} (${activeAvatar.skeleton.bones.length} bones)`, 'ok');
   // dump bone names
   const names = activeAvatar.skeleton.bones.map((b) => b.name);
