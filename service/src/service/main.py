@@ -458,17 +458,23 @@ def serve_client(filename: str):
     if ".." in filename:
         raise HTTPException(400, "invalid filename")
     path = STATIC_DIR / filename
+    # fallback: se for diretório, tenta index.html
+    if path.is_dir():
+        path = path / "index.html"
     if not path.exists() or not path.is_file():
         raise HTTPException(404, "not found")
     # content-type por extensão
-    if filename.endswith(".html"):
+    fname = path.name
+    if fname.endswith(".html"):
         media = "text/html"
-    elif filename.endswith(".js"):
+    elif fname.endswith(".js"):
         media = "application/javascript"
-    elif filename.endswith(".css"):
+    elif fname.endswith(".css"):
         media = "text/css"
-    elif filename.endswith(".json"):
+    elif fname.endswith(".json"):
         media = "application/json"
+    elif fname.endswith(".bvh"):
+        media = "model/bvh"
     else:
         media = "application/octet-stream"
     return FileResponse(path, media_type=media)
