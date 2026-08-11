@@ -37,7 +37,7 @@ export function gestureToClip(gesture, name = 'gesture') {
       times.push(t);
       quatValues.push(_q.x, _q.y, _q.z, _q.w);
     }
-    // position track (0,0,0) — não muda, mas mixer espera pra alguns bones
+    // position track (0,0,0) — não muda
     tracks.push(new THREE.VectorKeyframeTrack(
       `${boneName}.position`,
       [0],
