@@ -1,35 +1,21 @@
 # Python
 __pycache__/
 *.py[cod]
-*.so
 *.egg-info/
-.venv/
+
+# Venv
 venv/
-.env
-.env.local
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+.venv/
 
-# Data / runtime
-data/raw/
+# Three.js vendor (rebuildable)
+clients/avatar-poc/vendor/
+clients/avatar-poc/bvh/
+
+# data/ runtime (cache, samples)
 data/cache/
-data/output/
+data/samples/
+samples/
+
+# outputs
 *.mp4
-*.gif
-*.webm
-!docs/assets/*.gif
-
-# Editor / OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-
-# Node (Hermes skill helpers)
-node_modules/
-package-lock.json
-
-# Logs
-*.log
-logs/
+!docs/**/*.mp4
