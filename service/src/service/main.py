@@ -350,6 +350,50 @@ def translate_json(req: TranslateRequest):
     )
 
 
+@app.post("/translate/file", operation_id="translate_file")
+def translate_file(req: TranslateRequest):
+    """Gera MP4 e retorna JSON com a URL pública do arquivo (não o binário).
+
+    Pensado pra agentes/MCP tools que não conseguem decodificar MP4 binário
+    de dentro de uma tool call. O cliente (ou picoclaw) baixa o MP4 via URL
+    pública e envia pelo canal.
+    """
+    t = get_translator()
+    data = _resolve_gloss(req, t)
+    if not data["official_gloss"]:
+        raise HTTPException(422, "no gloss from any backend")
+
+    api_base = os.getenv("LIBRAS2_PUBLIC_URL", f"http://127.0.0.1:8088")
+    try:
+        out_path = render_widget(
+            text=req.text,
+            api_base=api_base,
+            cache_dir=CACHE_DIR,
+            fmt=req.format,
+        )
+    except Exception as e:
+        logger.warning("widget render failed, falling back to text: %s", e)
+        out_path = render_text_video(
+            text=req.text,
+            gloss=data["official_gloss"],
+            cache_dir=CACHE_DIR,
+            fmt=req.format,
+        )
+
+    public_url = f"{api_base}/videos/{out_path.name}"
+    return {
+        "text": req.text,
+        "gloss": data["official_gloss"],
+        "missing": data["missing"],
+        "video_url": public_url,
+        "video_filename": out_path.name,
+        "video_size_bytes": out_path.stat().st_size,
+        "format": req.format,
+        "backend": data["backend"],
+        "note": data["note"],
+    }
+
+
 @app.get("/signs/{word}/glb")
 def get_sign_glb(word: str):
     """Serve o .glb (animação 3D) do sinal, do cache ou baixando do dicionário."""
@@ -464,7 +508,8 @@ if _MCP_AVAILABLE:
         ),
         include_operations=[
             "glosa",            # POST /glosa
-            "translate",        # POST /translate
+            "translate",        # POST /translate (binário MP4/GIF)
+            "translate_file",   # POST /translate/file (JSON com video_url)
             "get_sign_info",    # GET /signs/{word}/info
             # "get_sign_glb",  # GET /signs/{word}/glb  — desabilitado: VLibras mudou formato
         ],
