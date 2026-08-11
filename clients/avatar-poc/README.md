@@ -1,32 +1,42 @@
-# Libras2 — Avatar POC (Three.js + BVH)
+# Libras2 — Avatar POC (Three.js + BVH + GLB)
 
-Prova de conceito que mostra como criar um avatar 3D humanóide e tocar
-animações BVH (Biovision Hierarchy) no navegador — base técnica para
-futuras expansões multi-língua (LSCh, LSA, etc).
+Prova de conceito que mostra como criar um avatar 3D humanóide (GLB mixamo-compatible)
+e tocar animações BVH (Biovision mocap) no navegador — base técnica para futuras
+expansões multi-língua (LSCh, LSA, etc).
 
-## O que tem aqui
+## O que tem
 
-- `index.html` (~16KB) — página standalone com:
+- `index.html` (~24KB) — página standalone com:
   - **Three.js r167** (render WebGL)
   - **BVHLoader** (carrega arquivos BVH mocap)
+  - **GLTFLoader** (carrega GLB avatares mixamo-compatible)
+  - **SkeletonUtils** (retarget BVH→GLB)
   - **OrbitControls** (câmera)
-  - **MediaRecorder** (exporta MP4/webm)
-  - Skeleton com `SkeletonHelper` (avatar wireframe)
+  - **MediaRecorder** (exporta webm)
+  - Seletor de avatar (dropdown com GLBs detectados)
   - Caption highlighting por palavra
-  - Sequência animada (N palavras → N BVHs tocadas em ordem)
+  - Sequência animada (N palavras → N BVHs retargeted → 1 GLB)
   - Logs em tempo real
 
-- `setup.sh` — baixa dependências (three.js + BVH samples) e popula `vendor/` e `bvh/`
+- `setup.sh` — baixa dependências (three.js + 3 BVH + 2 GLB) e popula `vendor/`, `bvh/`, `glb/`
 
 ## Como rodar
 
 ```bash
 cd clients/avatar-poc
-./setup.sh                                    # baixa 1.3MB
-# abra http://<host>:8088/clients/avatar-poc/ no browser
+./setup.sh
+# abre http://<host>:8088/clients/avatar-poc/ no browser
 ```
 
-Cole uma frase, clique **Tokenizar**, depois **Tocar**.
+Selecione o avatar no dropdown, cole uma frase, clique **Tokenizar**, depois **Tocar**.
+
+## Mapeamento BVH (CMU) → Mixamo
+
+O BVH `pirouette.bvh` usa convenção CMU (nomes curtos: `hip`, `rShldr`, `rHand`).
+O GLB `Soldier.glb` usa convenção Mixamo (prefixo `mixamorig`: `mixamorigHips`, `mixamorigRightArm`).
+
+O `index.html` tem o mapa `BVH_TO_MIXAMO` com 41 bones renomeados em runtime
+antes do `SkeletonUtils.retargetClip`. Veja o mapa completo no source.
 
 ## Arquitetura
 
@@ -39,34 +49,37 @@ frase em PT  →  tokenize()  →  [word1, word2, word3]
                                     ↓
                           nextInSequence() toca um por vez
                                     ↓
-                          applyBVH() + AnimationMixer.play()
+                          applyBVHToAvatar(bvh):
+                            1. clone GLB (SkeletonUtils.clone)
+                            2. renameBVHBones(bvh)  ← CMU→Mixamo
+                            3. SkeletonUtils.retargetClip(skinnedMesh, bvh.skeleton, bvh.clip)
+                            4. AnimationMixer.play(retargetedClip)
                                     ↓
                           renderCaption() destaca palavra ativa
 ```
 
 Em produção:
 - `tokenize()` seria substituído por chamada ao backend LSCh/VLibras (glosa)
-- Cada palavra teria seu próprio BVH (dataset de intérprete filmado)
-- Skeleton wireframe seria substituído por avatar GLB/VRM
+- Cada palavra teria seu próprio BVH real (dataset de intérprete filmado)
 - Caption viria do DOM, não gerado por Pillow (canvas.toDataURL não pega DOM)
 
 ## Limitações
 
-- **Avatar é wireframe** (esqueleto com linhas), não humanóide realista
-- **BVH de exemplo é dança de bailarina** (`pirouette.bvh`), não sinais de Libras
+- **BVH de exemplo é dança de bailarina** (`pirouette.bvh`), não sinais de Libras — poses ficam estranhas no Soldier
 - **Gloss é split por espaço** (heurística), não usa VLibras/LSCh
 - **3 BVHs idênticos** (round-robin), não há dataset real
-- **MediaRecorder exporta webm**, não MP4 (codec vp9)
+- **MediaRecorder exporta webm**, não MP4
+- **2 GLBs demo** (Soldier humanoide + RobotExpressive robótico)
 
 ## Próximos passos
 
-1. **Avatar GLB/VRM**: usar RPM ou VRM sample (esqueleto humanóide completo com mãos)
-2. **Dataset LSCh real**: contratar intérprete + filmar 200+ sinais + processar via Mixamo/Blender
-3. **Backend glosa**: integrar VLibras (PT) + criar stub LSCh (ES→LSCh via dicionário)
-4. **Renderer Playwright**: já temos infra (widget renderer), adaptar pra esse HTML
-5. **MP4 export real**: usar ffmpeg (igual widget renderer atual) em vez de MediaRecorder
+1. **Dataset LSCh real**: contratar intérprete + filmar 200+ sinais + processar via Mixamo/Blender
+2. **Backend glosa**: integrar VLibras (PT) + criar stub LSCh (ES→LSCh via dicionário)
+3. **Renderer Playwright**: já temos infra (widget renderer), adaptar pra esse HTML
+4. **MP4 export real**: usar ffmpeg (igual widget renderer atual) em vez de MediaRecorder
 
 ## Ver também
 
 - `../play.html` — widget renderer do VLibras (production)
-- `docs/SIGN_AVATAR_RESEARCH.md` — pesquisa de bibliotecas/avatares
+- `docs/SIGN_AVATAR_POC.md` — pesquisa de bibliotecas/avatares
+- `docs/SIGN_AVATAR_POC.md` § "Caminho pra produção" — roadmap multi-língua

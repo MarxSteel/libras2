@@ -104,13 +104,21 @@
 
   <div id="controls">
     <div class="row">
+      <label>Avatar:
+        <select id="avatarSelect" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); color: var(--fg); border-radius: 6px; padding: 8px 10px; font: inherit;">
+          <option value="">(detectando...)</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="showHelperChk" /> Skeleton wireframe</label>
+      <label><input type="checkbox" id="loopChk" /> Loop</label>
+    </div>
+    <div class="row">
       <label>Frase → gloss:
         <input type="text" id="textInput" value="olá amigo bom dia" placeholder="ex: olá amigo" />
       </label>
       <button id="btnTokenize" class="secondary">Tokenizar</button>
       <button id="btnPlay" disabled>▶ Tocar</button>
       <button id="btnStop" class="danger" disabled>■ Parar</button>
-      <label><input type="checkbox" id="loopChk" /> Loop</label>
     </div>
     <div class="row">
       <button id="btnExport" class="secondary" disabled>⤓ Exportar MP4 (MediaRecorder)</button>
@@ -134,6 +142,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { BVHLoader } from 'three/addons/loaders/BVHLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 // ============================================================================
 // Logs
@@ -186,17 +195,26 @@ grid.position.y = 0;
 scene.add(grid);
 
 // ============================================================================
-// Avatar: SkeletonHelper do BVH (sem GLB por enquanto — usa o skeleton do BVH)
+// Avatar: GLB (humanóide) + BVH (animação) via SkeletonUtils.retargetClip
 // ============================================================================
-let skeletonGroup = null;     // THREE.Group com os bones
-let skeletonHelper = null;    // visualizador wireframe
+let avatarRoot = null;        // THREE.Object3D raiz do avatar (clonado por BVH)
+let avatarHelper = null;      // SkeletonHelper pra debug
 let mixer = null;             // THREE.AnimationMixer
 let currentAction = null;
 let currentClip = null;
 let currentBVH = null;
 const clock = new THREE.Clock();
 
-// cache de BVH carregados (key = filename sem path)
+// Selecionador de avatar (combobox na UI)
+let availableAvatars = [];    // [{ name, url }]
+let activeAvatar = null;      // { name, url, sceneTemplate }
+let activeAvatarSkeleton = null;  // THREE.Skeleton do GLB
+let activeAvatarRoot = null;      // THREE.Object3D raiz (template)
+
+// Selecionador de BVH
+const bvhFiles = ['bvh/pirouette.bvh', 'bvh/dance1.bvh', 'bvh/dance2.bvh'];
+
+// cache de BVH carregados
 const bvhCache = new Map();
 async function loadBVH(url) {
   if (bvhCache.has(url)) return bvhCache.get(url);
@@ -214,16 +232,55 @@ async function loadBVH(url) {
   });
 }
 
+// cache de GLBs carregados (template)
+const glbCache = new Map();
+async function loadGLB(url) {
+  if (glbCache.has(url)) return glbCache.get(url);
+  log(`carregando GLB: ${url}`);
+  const loader = new GLTFLoader();
+  return new Promise((resolve, reject) => {
+    loader.load(url, (gltf) => {
+      // extrai primeiro SkinnedMesh/Skeleton
+      let skeleton = null;
+      let root = null;
+      gltf.scene.traverse((obj) => {
+        if (obj.isSkinnedMesh && !skeleton) {
+          skeleton = obj.skeleton;
+          root = obj;
+        }
+      });
+      if (!skeleton) {
+        reject(new Error('GLB não tem SkinnedMesh'));
+        return;
+      }
+      const result = { gltf, skeleton, root };
+      glbCache.set(url, result);
+      log(`GLB ok: ${skeleton.bones.length} bones, ${gltf.scene.children.length} children`, 'ok');
+      resolve(result);
+    }, undefined, (err) => {
+      log(`falha GLB ${url}: ${err.message || err}`, 'err');
+      reject(err);
+    });
+  });
+}
+
 function clearAvatar() {
-  if (skeletonGroup) {
-    scene.remove(skeletonGroup);
-    skeletonGroup = null;
+  if (avatarRoot) {
+    scene.remove(avatarRoot);
+    avatarRoot.traverse((obj) => {
+      if (obj.isMesh) {
+        obj.geometry?.dispose();
+        if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
+        else obj.material?.dispose();
+      }
+    });
+    avatarRoot = null;
   }
-  if (skeletonHelper) {
-    scene.remove(skeletonHelper);
-    skeletonHelper.geometry.dispose();
-    skeletonHelper.material.dispose();
-    skeletonHelper = null;
+  if (avatarHelper) {
+    scene.remove(avatarHelper);
+    avatarHelper.geometry.dispose();
+    avatarHelper.material.dispose();
+    avatarHelper = null;
   }
   if (mixer) {
     mixer.stopAllAction();
@@ -233,29 +290,150 @@ function clearAvatar() {
   currentClip = null;
 }
 
-function applyBVH(bvhResult) {
+// ============================================================================
+// Mapeamento de bones BVH (CMU/pirouette) → Mixamo (GLB Soldier)
+// pirouette.bvh tem formato CMU: hip, abdomen, chest, neck, head, lShldr, etc.
+// GLB Mixamo tem prefixo mixamorig: mixamorigHips, mixamorigSpine, etc.
+// ============================================================================
+const BVH_TO_MIXAMO = {
+  // tronco
+  'hip': 'mixamorigHips',
+  'abdomen': 'mixamorigSpine',
+  'chest': 'mixamorigSpine1',
+  // cabeça
+  'neck': 'mixamorigNeck',
+  'head': 'mixamorigHead',
+  // ombros/braços (CMU usa rShldr/lShldr, Mixamo usa Arm + ForeArm)
+  'rCollar': 'mixamorigRightShoulder',
+  'rShldr': 'mixamorigRightArm',
+  'rForeArm': 'mixamorigRightForeArm',
+  'rHand': 'mixamorigRightHand',
+  'lCollar': 'mixamorigLeftShoulder',
+  'lShldr': 'mixamorigLeftArm',
+  'lForeArm': 'mixamorigLeftForeArm',
+  'lHand': 'mixamorigLeftHand',
+  // pernas (CMU usa rThigh/lThigh, Mixamo usa UpLeg + Leg)
+  'rButtock': 'mixamorigRightUpLeg',
+  'rThigh': 'mixamorigRightUpLeg',
+  'rShin': 'mixamorigRightLeg',
+  'rFoot': 'mixamorigRightFoot',
+  'lButtock': 'mixamorigLeftUpLeg',
+  'lThigh': 'mixamorigLeftUpLeg',
+  'lShin': 'mixamorigLeftLeg',
+  'lFoot': 'mixamorigLeftFoot',
+  // dedos (CMU usa rThumb1, rIndex1, etc.)
+  'rThumb1': 'mixamorigRightHandThumb1',
+  'rThumb2': 'mixamorigRightHandThumb2',
+  'rIndex1': 'mixamorigRightHandIndex1',
+  'rIndex2': 'mixamorigRightHandIndex2',
+  'rMid1': 'mixamorigRightHandMiddle1',
+  'rMid2': 'mixamorigRightHandMiddle2',
+  'rRing1': 'mixamorigRightHandRing1',
+  'rRing2': 'mixamorigRightHandRing2',
+  'rPinky1': 'mixamorigRightHandPinky1',
+  'rPinky2': 'mixamorigRightHandPinky2',
+  'lThumb1': 'mixamorigLeftHandThumb1',
+  'lThumb2': 'mixamorigLeftHandThumb2',
+  'lIndex1': 'mixamorigLeftHandIndex1',
+  'lIndex2': 'mixamorigLeftHandIndex2',
+  'lMid1': 'mixamorigLeftHandMiddle1',
+  'lMid2': 'mixamorigLeftHandMiddle2',
+  'lRing1': 'mixamorigLeftHandRing1',
+  'lRing2': 'mixamorigLeftHandRing2',
+  'lPinky1': 'mixamorigLeftHandPinky1',
+  'lPinky2': 'mixamorigLeftHandPinky2',
+};
+
+// Renomeia bones BVH (in-place) para casar com Mixamo
+// Retorna o número de bones renomeados
+function renameBVHBones(bvhResult) {
+  let renamed = 0;
+  for (const bone of bvhResult.skeleton.bones) {
+    if (BVH_TO_MIXAMO[bone.name]) {
+      bone.name = BVH_TO_MIXAMO[bone.name];
+      renamed++;
+    }
+  }
+  return renamed;
+}
+
+// Aplica o BVH no avatar (retarget via SkeletonUtils.retargetClip)
+function applyBVHToAvatar(bvhResult) {
+  if (!activeAvatar) {
+    log('sem avatar carregado', 'err');
+    return;
+  }
   clearAvatar();
 
-  // cria grupo com os bones (root bone já está na hierarquia do skeleton)
-  const root = bvhResult.skeleton.bones[0];
-  skeletonGroup = new THREE.Group();
-  skeletonGroup.add(root);
-  scene.add(skeletonGroup);
+  // clona o template do avatar (precisa ser clone pra retarget não mexer no original)
+  const clone = SkeletonUtils.clone(activeAvatar.gltf.scene);
+  // acha o SkinnedMesh no clone
+  let skinnedMesh = null;
+  clone.traverse((obj) => {
+    if (obj.isSkinnedMesh && !skinnedMesh) skinnedMesh = obj;
+  });
+  if (!skinnedMesh) {
+    log('clone não tem SkinnedMesh', 'err');
+    return;
+  }
 
-  // helper visual
-  skeletonHelper = new THREE.SkeletonHelper(root);
-  skeletonHelper.material.linewidth = 3;
-  scene.add(skeletonHelper);
+  // renomeia os bones BVH pra match Mixamo
+  const renamed = renameBVHBones(bvhResult);
+  log(`renomeei ${renamed}/${bvhResult.skeleton.bones.length} bones BVH → Mixamo`, 'info');
 
-  // mixer
-  mixer = new THREE.AnimationMixer(root);
-  currentAction = mixer.clipAction(bvhResult.clip);
+  // retarget: pega o clip do BVH e aplica no skeleton do clone
+  // signature: retargetClip(target, source, clip, options)
+  //   target = Object3D com SkinnedMesh (do GLB)
+  //   source = skeleton do BVH (THREE.Skeleton, com .bones renomeados)
+  //   clip   = AnimationClip do BVH
+  let retargetedClip;
+  try {
+    retargetedClip = SkeletonUtils.retargetClip(
+      skinnedMesh,                 // target: Object3D com SkinnedMesh
+      bvhResult.skeleton,          // source: THREE.Skeleton (tem .bones)
+      bvhResult.clip                // clip: AnimationClip
+    );
+  } catch (e) {
+    log(`retargetClip error: ${e.message}`, 'err');
+    retargetedClip = null;
+  }
+  log(`retargetClip result: ${retargetedClip ? `${retargetedClip.tracks.length} tracks` : 'null'}`, 'info');
+
+  if (!retargetedClip) {
+    log('retargetClip retornou null — fallback sem retarget', 'warn');
+    // fallback: toca o clip original mesmo (vai dar bug mas pelo menos vê algo)
+    skinnedMesh.add(bvhResult.skeleton.bones[0]);
+    scene.add(clone);
+    avatarRoot = clone;
+    mixer = new THREE.AnimationMixer(skinnedMesh);
+    currentAction = mixer.clipAction(bvhResult.clip);
+    currentAction.setLoop(THREE.LoopRepeat);
+    currentAction.play();
+    return;
+  }
+
+  // adiciona o root bone do BVH como filho do skinnedMesh (pra hierarquia)
+  skinnedMesh.add(bvhResult.skeleton.bones[0]);
+
+  // adiciona o clone na cena
+  scene.add(clone);
+  avatarRoot = clone;
+
+  // mixer com o clip retargetado
+  mixer = new THREE.AnimationMixer(skinnedMesh);
+  currentAction = mixer.clipAction(retargetedClip);
   currentAction.setLoop(THREE.LoopRepeat);
   currentAction.play();
-  currentClip = bvhResult.clip;
+  currentClip = retargetedClip;
   currentBVH = bvhResult;
 
-  setStatus(`Tocando: ${currentClip.duration.toFixed(1)}s, ${bvhResult.skeleton.bones.length} bones`);
+  // helper visual (opcional, debug)
+  if (document.getElementById('showHelperChk')?.checked) {
+    avatarHelper = new THREE.SkeletonHelper(skinnedMesh);
+    scene.add(avatarHelper);
+  }
+
+  setStatus(`Tocando: ${currentClip.duration.toFixed(1)}s, ${retargetedClip.tracks.length} tracks (${bvhResult.skeleton.bones.length} bones BVH → ${skinnedMesh.skeleton.bones.length} bones GLB)`);
 }
 
 // ============================================================================
@@ -333,7 +511,7 @@ function nextInSequence() {
   renderCaption(sequence.map(s => s.word), seqIndex);
   const bvh = bvhCache.get(item.bvhUrl);
   if (bvh) {
-    applyBVH(bvh);
+    applyBVHToAvatar(bvh);
   } else {
     log(`BVH não carregado: ${item.bvhUrl}`, 'err');
   }
@@ -439,14 +617,66 @@ btnTokenize.addEventListener('click', async () => {
 btnPlay.addEventListener('click', () => playSequence(tokenize(textInput.value)));
 btnStop.addEventListener('click', stopSequence);
 btnExport.addEventListener('click', exportRecording);
-
 textInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') btnTokenize.click(); });
 
+// seletor de avatar
+const avatarSelect = document.getElementById('avatarSelect');
+avatarSelect.addEventListener('change', async () => {
+  const url = avatarSelect.value;
+  if (!url) return;
+  stopSequence();
+  clearAvatar();
+  activeAvatar = await loadGLB(url);
+  log(`avatar ativo: ${url.split('/').pop()} (${activeAvatar.skeleton.bones.length} bones)`);
+  setStatus(`Avatar: ${url.split('/').pop()}`);
+});
+
 // ============================================================================
-// Boot
+// Boot: detectar GLBs disponíveis + carregar o primeiro
 // ============================================================================
-log('POC pronto. Cole uma frase e clique "Tokenizar".', 'ok');
-log('BVHs demo: pirouette + 2 cópias (round-robin). Em prod, cada palavra = 1 BVH próprio.', 'info');
+async function detectGLBs() {
+  // tenta uma lista conhecida (extensível)
+  const candidates = ['glb/Soldier.glb', 'glb/RobotExpressive.glb'];
+  const found = [];
+  for (const url of candidates) {
+    try {
+      // usa GET com Range: bytes=0-0 (alguns servers não aceitam HEAD)
+      const r = await fetch(url, { method: 'GET', headers: { Range: 'bytes=0-0' } });
+      if (r.ok || r.status === 206) {
+        found.push({ name: url.split('/').pop().replace('.glb', ''), url });
+      }
+    } catch (_) {}
+  }
+  return found;
+}
+
+(async () => {
+  log('POC v2 — GLB + BVH retarget via SkeletonUtils', 'ok');
+  log('detectando avatares disponíveis…', 'info');
+  availableAvatars = await detectGLBs();
+  if (availableAvatars.length === 0) {
+    log('nenhum GLB encontrado em glb/ — rode ./setup.sh', 'err');
+    return;
+  }
+  // popula seletor
+  avatarSelect.innerHTML = '';
+  availableAvatars.forEach((a) => {
+    const opt = document.createElement('option');
+    opt.value = a.url;
+    opt.textContent = a.name;
+    avatarSelect.appendChild(opt);
+  });
+  // carrega o primeiro
+  activeAvatar = await loadGLB(availableAvatars[0].url);
+  // expõe no window pra debug
+  window.__debug = { activeAvatar, bvhCache, glbCache, skeletonUtils: SkeletonUtils, THREE };
+  log(`avatar padrão: ${availableAvatars[0].name} (${activeAvatar.skeleton.bones.length} bones)`, 'ok');
+  // dump bone names
+  const names = activeAvatar.skeleton.bones.map((b) => b.name);
+  log(`GLB bones (${names.length}): ${names.slice(0, 10).join(', ')}…`, 'info');
+  setStatus(`Avatar: ${availableAvatars[0].name}`);
+  log('frase padrão pronta: "olá amigo bom dia" — clique Tocar!', 'ok');
+})();
 </script>
 </body>
 </html>
